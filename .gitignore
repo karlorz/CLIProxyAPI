@@ -41,6 +41,7 @@ docs/*
 .agents/*
 .agents/*
 .opencode/*
+.idea/*
 .bmad/*
 _bmad/*
 _bmad-output/*
