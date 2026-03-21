@@ -1,21 +1,33 @@
-name: fork-tag
+name: release-on-merge
 
 on:
-  push:
-    branches:
-      - main
-      - master
+  pull_request_target:
+    types:
+      - closed
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Fork release tag to publish
+        required: true
+        type: string
+      target_sha:
+        description: Commit SHA to tag
+        required: true
+        type: string
 
 permissions:
   actions: write
   contents: write
 
-concurrency:
-  group: fork-tag-sequence
-  cancel-in-progress: false
-
 jobs:
-  allocate-tag:
+  publish:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.merged == true &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'bot/release-pr'
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,107 +39,87 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Fetch fork and upstream tags
-        run: |
-          git fetch --force --tags origin
-          git fetch --force --tags https://github.com/router-for-me/CLIProxyAPI.git
-
-      - id: allocate_tag
-        name: Allocate fork-safe tag
+      - id: resolve_release
+        name: Resolve release target
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
           set -euo pipefail
 
-          branch_name="${GITHUB_REF_NAME}"
-          upstream_tag="$(
-            git tag --merged HEAD --list 'v*' \
-              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-              | sort -V \
-              | tail -n 1 || true
-          )"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            release_tag="${{ inputs.release_tag }}"
+            target_sha="${{ inputs.target_sha }}"
+          else
+            release_tag="$(
+              printf '%s\n' "${PR_BODY}" \
+                | sed -n 's/^Release Tag: \(v[0-9][0-9.]*-[0-9][0-9]*\)$/\1/p' \
+                | head -n 1
+            )"
+            target_sha="${PR_MERGE_SHA}"
+          fi
 
-          if [ -z "${upstream_tag}" ]; then
-            echo "No reachable upstream semantic version tag was found for this commit." >&2
+          if [ -z "${release_tag}" ]; then
+            echo "Unable to resolve release tag." >&2
             exit 1
           fi
 
-          escaped_upstream_tag="${upstream_tag//./\\.}"
-          existing_tag="$(
-            git tag --points-at HEAD --list "${upstream_tag}-*" \
-              | grep -E "^${escaped_upstream_tag}-[0-9]+$" \
-              | sort -t- -k2,2n \
-              | tail -n 1 || true
-          )"
+          if ! printf '%s\n' "${release_tag}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$'; then
+            echo "Invalid release tag format: ${release_tag}" >&2
+            exit 1
+          fi
 
-          if [ -n "${existing_tag}" ]; then
-            echo "Fork tag already exists on this commit: ${existing_tag}"
-            {
-              echo "release_tag=${existing_tag}"
-              echo "created_new_tag=false"
-              echo "branch_name=${branch_name}"
-            } >> "${GITHUB_OUTPUT}"
+          if [ -z "${target_sha}" ]; then
+            echo "Unable to resolve target commit SHA." >&2
+            exit 1
+          fi
+
+          {
+            echo "release_tag=${release_tag}"
+            echo "target_sha=${target_sha}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Fetch target commit and tags
+        run: |
+          git fetch --force --tags origin
+          git fetch origin "${{ steps.resolve_release.outputs.target_sha }}"
+
+      - id: create_tag
+        name: Create release tag
+        run: |
+          set -euo pipefail
+
+          release_tag="${{ steps.resolve_release.outputs.release_tag }}"
+          target_sha="${{ steps.resolve_release.outputs.target_sha }}"
+
+          if git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null; then
+            echo "Tag already exists: ${release_tag}"
+            echo "created_new_tag=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
-          attempt=0
-          while [ "${attempt}" -lt 5 ]; do
-            git fetch --force --tags origin
-
-            highest_suffix="$(
-              git tag --list "${upstream_tag}-*" \
-                | grep -E "^${escaped_upstream_tag}-[0-9]+$" \
-                | sed "s/^${upstream_tag}-//" \
-                | sort -n \
-                | tail -n 1 || true
-            )"
-
-            if [ -n "${highest_suffix}" ]; then
-              next_suffix=$((highest_suffix + 1))
-            else
-              next_suffix=0
-            fi
-
-            release_tag="${upstream_tag}-${next_suffix}"
-
-            if git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null; then
-              attempt=$((attempt + 1))
-              continue
-            fi
-
-            git tag -a "${release_tag}" -m "Fork release ${release_tag}"
-
-            if git push origin "refs/tags/${release_tag}"; then
-              echo "Created fork tag ${release_tag}"
-              {
-                echo "release_tag=${release_tag}"
-                echo "created_new_tag=true"
-                echo "branch_name=${branch_name}"
-              } >> "${GITHUB_OUTPUT}"
-              exit 0
-            fi
-
-            git tag -d "${release_tag}"
-            attempt=$((attempt + 1))
-          done
-
-          echo "Failed to allocate a unique fork tag after multiple attempts." >&2
-          exit 1
+          git tag -a "${release_tag}" "${target_sha}" -m "Fork release ${release_tag}"
+          git push origin "refs/tags/${release_tag}"
+          echo "created_new_tag=true" >> "${GITHUB_OUTPUT}"
 
       - name: Dispatch release workflow
-        if: steps.allocate_tag.outputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh workflow run release.yaml \
             --repo "${GITHUB_REPOSITORY}" \
-            --ref "${{ steps.allocate_tag.outputs.branch_name }}" \
-            -f release_tag="${{ steps.allocate_tag.outputs.release_tag }}"
+            -f release_tag="${{ steps.resolve_release.outputs.release_tag }}"
 
       - name: Dispatch docker workflow
-        if: steps.allocate_tag.outputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh workflow run docker-image.yml \
             --repo "${GITHUB_REPOSITORY}" \
-            --ref "${{ steps.allocate_tag.outputs.branch_name }}" \
-            -f release_tag="${{ steps.allocate_tag.outputs.release_tag }}"
+            -f release_tag="${{ steps.resolve_release.outputs.release_tag }}"
+
+      - name: Delete release PR branch
+        if: github.event_name == 'pull_request_target'
+        continue-on-error: true
+        run: |
+          git push origin --delete bot/release-pr
