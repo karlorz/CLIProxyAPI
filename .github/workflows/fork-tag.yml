@@ -1,0 +1,100 @@
+name: fork-tag
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-tag-sequence
+  cancel-in-progress: false
+
+jobs:
+  allocate-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch fork and upstream tags
+        run: |
+          git fetch --force --tags origin
+          git fetch --force --tags https://github.com/router-for-me/CLIProxyAPI.git
+
+      - name: Allocate fork-safe tag
+        run: |
+          set -euo pipefail
+
+          upstream_tag="$(
+            git tag --merged HEAD --list 'v*' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V \
+              | tail -n 1 || true
+          )"
+
+          if [ -z "${upstream_tag}" ]; then
+            echo "No reachable upstream semantic version tag was found for this commit." >&2
+            exit 1
+          fi
+
+          escaped_upstream_tag="${upstream_tag//./\\.}"
+          existing_tag="$(
+            git tag --points-at HEAD --list "${upstream_tag}-*" \
+              | grep -E "^${escaped_upstream_tag}-[0-9]+$" \
+              | sort -t- -k2,2n \
+              | tail -n 1 || true
+          )"
+
+          if [ -n "${existing_tag}" ]; then
+            echo "Fork tag already exists on this commit: ${existing_tag}"
+            exit 0
+          fi
+
+          attempt=0
+          while [ "${attempt}" -lt 5 ]; do
+            git fetch --force --tags origin
+
+            highest_suffix="$(
+              git tag --list "${upstream_tag}-*" \
+                | grep -E "^${escaped_upstream_tag}-[0-9]+$" \
+                | sed "s/^${upstream_tag}-//" \
+                | sort -n \
+                | tail -n 1 || true
+            )"
+
+            if [ -n "${highest_suffix}" ]; then
+              next_suffix=$((highest_suffix + 1))
+            else
+              next_suffix=0
+            fi
+
+            release_tag="${upstream_tag}-${next_suffix}"
+
+            if git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null; then
+              attempt=$((attempt + 1))
+              continue
+            fi
+
+            git tag -a "${release_tag}" -m "Fork release ${release_tag}"
+
+            if git push origin "refs/tags/${release_tag}"; then
+              echo "Created fork tag ${release_tag}"
+              exit 0
+            fi
+
+            git tag -d "${release_tag}"
+            attempt=$((attempt + 1))
+          done
+
+          echo "Failed to allocate a unique fork tag after multiple attempts." >&2
+          exit 1
