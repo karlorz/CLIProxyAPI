@@ -7,6 +7,7 @@ on:
       - master
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -31,10 +32,12 @@ jobs:
           git fetch --force --tags origin
           git fetch --force --tags https://github.com/router-for-me/CLIProxyAPI.git
 
-      - name: Allocate fork-safe tag
+      - id: allocate_tag
+        name: Allocate fork-safe tag
         run: |
           set -euo pipefail
 
+          branch_name="${GITHUB_REF_NAME}"
           upstream_tag="$(
             git tag --merged HEAD --list 'v*' \
               | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
@@ -57,6 +60,11 @@ jobs:
 
           if [ -n "${existing_tag}" ]; then
             echo "Fork tag already exists on this commit: ${existing_tag}"
+            {
+              echo "release_tag=${existing_tag}"
+              echo "created_new_tag=false"
+              echo "branch_name=${branch_name}"
+            } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
@@ -89,6 +97,11 @@ jobs:
 
             if git push origin "refs/tags/${release_tag}"; then
               echo "Created fork tag ${release_tag}"
+              {
+                echo "release_tag=${release_tag}"
+                echo "created_new_tag=true"
+                echo "branch_name=${branch_name}"
+              } >> "${GITHUB_OUTPUT}"
               exit 0
             fi
 
@@ -98,3 +111,23 @@ jobs:
 
           echo "Failed to allocate a unique fork tag after multiple attempts." >&2
           exit 1
+
+      - name: Dispatch release workflow
+        if: steps.allocate_tag.outputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release.yaml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref "${{ steps.allocate_tag.outputs.branch_name }}" \
+            -f release_tag="${{ steps.allocate_tag.outputs.release_tag }}"
+
+      - name: Dispatch docker workflow
+        if: steps.allocate_tag.outputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run docker-image.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref "${{ steps.allocate_tag.outputs.branch_name }}" \
+            -f release_tag="${{ steps.allocate_tag.outputs.release_tag }}"
