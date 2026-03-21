@@ -1,0 +1,232 @@
+name: upstream-sync-pr
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync-pr
+  cancel-in-progress: false
+
+env:
+  BASE_BRANCH: main
+  SYNC_BRANCH: bot/upstream-sync
+  UPSTREAM_REMOTE_URL: https://github.com/router-for-me/CLIProxyAPI.git
+
+jobs:
+  sync-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Configure upstream remote
+        run: |
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream "${UPSTREAM_REMOTE_URL}"
+          else
+            git remote add upstream "${UPSTREAM_REMOTE_URL}"
+          fi
+
+      - name: Fetch origin and upstream
+        run: |
+          git fetch --force origin "${BASE_BRANCH}"
+          git fetch --force --tags upstream main
+
+      - id: compare
+        name: Detect upstream changes
+        run: |
+          set -euo pipefail
+
+          origin_ref="origin/${BASE_BRANCH}"
+          upstream_ref="upstream/main"
+          ahead_count="$(git rev-list --count "${origin_ref}..${upstream_ref}")"
+          behind_count="$(git rev-list --count "${upstream_ref}..${origin_ref}")"
+          latest_upstream_tag="$(
+            git tag --merged "${upstream_ref}" --list 'v*' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V \
+              | tail -n 1 || true
+          )"
+
+          {
+            echo "ahead_count=${ahead_count}"
+            echo "behind_count=${behind_count}"
+            echo "latest_upstream_tag=${latest_upstream_tag}"
+          } >> "${GITHUB_OUTPUT}"
+
+          if [ "${ahead_count}" -eq 0 ]; then
+            echo "has_changes=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "has_changes=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: No upstream changes
+        if: steps.compare.outputs.has_changes == 'false'
+        run: |
+          {
+            echo "No upstream commits need syncing."
+            echo
+            echo "- Base branch: ${BASE_BRANCH}"
+            echo "- Upstream branch: upstream/main"
+            echo "- Fork-only commits on base: ${{ steps.compare.outputs.behind_count }}"
+            echo "- Latest upstream tag: ${{ steps.compare.outputs.latest_upstream_tag || 'none' }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - id: sync_branch
+        name: Build sync branch
+        if: steps.compare.outputs.has_changes == 'true'
+        run: |
+          set -euo pipefail
+
+          git checkout -B "${SYNC_BRANCH}" "origin/${BASE_BRANCH}"
+
+          if ! git merge --no-ff --no-edit upstream/main; then
+            git merge --abort || true
+            echo "merge_conflict=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          {
+            echo "merge_conflict=false"
+            echo "sync_head=$(git rev-parse HEAD)"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Stop on merge conflict
+        if: steps.sync_branch.outputs.merge_conflict == 'true'
+        run: |
+          {
+            echo "Upstream sync hit merge conflicts."
+            echo
+            echo "- Base branch: ${BASE_BRANCH}"
+            echo "- Upstream branch: upstream/main"
+            echo "- Review the conflicting changes manually."
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit 1
+
+      - name: Push sync branch
+        if: steps.compare.outputs.has_changes == 'true' && steps.sync_branch.outputs.merge_conflict == 'false'
+        run: |
+          git push --force-with-lease origin "HEAD:refs/heads/${SYNC_BRANCH}"
+
+      - name: Prepare PR body
+        if: steps.compare.outputs.has_changes == 'true' && steps.sync_branch.outputs.merge_conflict == 'false'
+        run: |
+          set -euo pipefail
+
+          pr_title="chore: sync upstream main"
+          if [ -n "${{ steps.compare.outputs.latest_upstream_tag }}" ]; then
+            pr_title="${pr_title} (${{ steps.compare.outputs.latest_upstream_tag }})"
+          fi
+
+          {
+            echo "PR_TITLE=${pr_title}"
+            echo "BASE_BRANCH=${BASE_BRANCH}"
+            echo "SYNC_BRANCH=${SYNC_BRANCH}"
+          } >> "${GITHUB_ENV}"
+
+          cat <<'EOF' > pr-body.md
+          ## Summary
+
+          This PR syncs `router-for-me/CLIProxyAPI@main` into this fork's `main` branch.
+
+          - Latest upstream tag in merged history: `${{ steps.compare.outputs.latest_upstream_tag || 'none' }}`
+          - Upstream commits not yet in `main` when generated: `${{ steps.compare.outputs.ahead_count }}`
+          - Fork-only commits currently on `main`: `${{ steps.compare.outputs.behind_count }}`
+
+          ## Review Notes
+
+          - Review upstream changes before merge.
+          - Merge using **Create a merge commit**.
+          - Do **not** squash or rebase this PR, or upstream tag ancestry used by fork releases will be lost.
+
+          ## Upstream Commits Pending In Base
+
+          ```text
+          EOF
+
+          git log --oneline --no-decorate "origin/${BASE_BRANCH}..upstream/main" | head -n 60 >> pr-body.md
+
+          cat <<'EOF' >> pr-body.md
+          ```
+
+          _Automatically generated by `upstream-sync-pr.yml`._
+          EOF
+
+      - id: upsert_pr
+        name: Create or update sync PR
+        if: steps.compare.outputs.has_changes == 'true' && steps.sync_branch.outputs.merge_conflict == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          existing_pr="$(
+            gh pr list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --state open \
+              --base "${BASE_BRANCH}" \
+              --head "${SYNC_BRANCH}" \
+              --json number,url \
+              --jq '.[0].number // ""'
+          )"
+
+          if [ -n "${existing_pr}" ]; then
+            gh pr edit "${existing_pr}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${PR_TITLE}" \
+              --body-file pr-body.md
+
+            existing_url="$(
+              gh pr view "${existing_pr}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --json url \
+                --jq '.url'
+            )"
+
+            {
+              echo "pr_number=${existing_pr}"
+              echo "pr_url=${existing_url}"
+              echo "pr_action=updated"
+            } >> "${GITHUB_OUTPUT}"
+          else
+            pr_url="$(
+              gh pr create \
+                --repo "${GITHUB_REPOSITORY}" \
+                --base "${BASE_BRANCH}" \
+                --head "${SYNC_BRANCH}" \
+                --title "${PR_TITLE}" \
+                --body-file pr-body.md
+            )"
+
+            {
+              echo "pr_number=$(basename "${pr_url}")"
+              echo "pr_url=${pr_url}"
+              echo "pr_action=created"
+            } >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Summarize PR
+        if: steps.upsert_pr.outputs.pr_url != ''
+        run: |
+          {
+            echo "Upstream sync PR ${{
+              steps.upsert_pr.outputs.pr_action
+            }} successfully."
+            echo
+            echo "- PR: ${{ steps.upsert_pr.outputs.pr_url }}"
+            echo "- Sync branch: ${SYNC_BRANCH}"
+            echo "- Base branch: ${BASE_BRANCH}"
+            echo "- Latest upstream tag: ${{ steps.compare.outputs.latest_upstream_tag || 'none' }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
