@@ -199,35 +199,50 @@ jobs:
         if: steps.plan_release.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
 
-          existing_pr="$(
-            gh pr list \
+          retry_gh() {
+            local attempt=1
+            local max_attempts=5
+
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge "${max_attempts}" ]; then
+                return 1
+              fi
+
+              sleep $((attempt * 3))
+              attempt=$((attempt + 1))
+            done
+          }
+
+          existing_pr_json="$(
+            retry_gh gh pr list \
               --repo "${GITHUB_REPOSITORY}" \
               --state open \
               --base "${BASE_BRANCH}" \
-              --head "${RELEASE_BRANCH}" \
+              --head "${REPO_OWNER}:${RELEASE_BRANCH}" \
               --json number,url \
-              --jq '.[0].number // ""'
+              --jq '.[0] // {}'
           )"
 
+          existing_pr="$(printf '%s' "${existing_pr_json}" | jq -r '.number // empty')"
+          existing_url="$(printf '%s' "${existing_pr_json}" | jq -r '.url // empty')"
+
           if [ -n "${existing_pr}" ]; then
-            gh pr edit "${existing_pr}" \
+            retry_gh gh pr edit "${existing_pr}" \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${PR_TITLE}" \
               --body-file pr-body.md
 
-            gh pr ready "${existing_pr}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --undo
-
-            existing_url="$(
-              gh pr view "${existing_pr}" \
+            retry_gh gh pr ready "${existing_pr}" \
                 --repo "${GITHUB_REPOSITORY}" \
-                --json url \
-                --jq '.url'
-            )"
+                --undo || true
 
             {
               echo "pr_number=${existing_pr}"
@@ -236,10 +251,10 @@ jobs:
             } >> "${GITHUB_OUTPUT}"
           else
             pr_url="$(
-              gh pr create \
+              retry_gh gh pr create \
                 --repo "${GITHUB_REPOSITORY}" \
                 --base "${BASE_BRANCH}" \
-                --head "${RELEASE_BRANCH}" \
+                --head "${REPO_OWNER}:${RELEASE_BRANCH}" \
                 --title "${PR_TITLE}" \
                 --body-file pr-body.md \
                 --draft
