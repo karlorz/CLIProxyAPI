@@ -156,7 +156,7 @@ jobs:
           ```text
           EOF
 
-          git log --oneline --no-decorate "origin/${BASE_BRANCH}..upstream/main" | head -n 60 >> pr-body.md
+          git log --oneline --no-decorate --max-count=60 "origin/${BASE_BRANCH}..upstream/main" >> pr-body.md
 
           cat <<'EOF' >> pr-body.md
           ```

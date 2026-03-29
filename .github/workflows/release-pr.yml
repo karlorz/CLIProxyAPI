@@ -186,7 +186,7 @@ jobs:
           ```text
           EOF
 
-          git log --oneline --no-decorate "${commit_range}" | head -n 80 >> pr-body.md
+          git log --oneline --no-decorate --max-count=80 "${commit_range}" >> pr-body.md
 
           cat <<'EOF' >> pr-body.md
           ```
