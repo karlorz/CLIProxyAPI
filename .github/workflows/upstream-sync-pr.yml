@@ -153,13 +153,62 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
           exit 1
 
-      - name: Push sync branch
+      - id: workflow_guard
+        name: Check workflow push requirements
         if: steps.compare.outputs.has_changes == 'true' && steps.sync_branch.outputs.merge_conflict == 'false'
+        env:
+          PUSH_TOKEN: ${{ secrets.UPSTREAM_SYNC_PUSH_TOKEN }}
         run: |
+          set -euo pipefail
+
+          workflow_files="$(git diff --name-only "origin/${BASE_BRANCH}..HEAD" -- .github/workflows)"
+
+          if [ -z "${workflow_files}" ]; then
+            echo "can_push=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          {
+            echo "workflow_files<<EOF"
+            printf '%s\n' "${workflow_files}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+          if [ -n "${PUSH_TOKEN}" ]; then
+            echo "can_push=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "can_push=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Stop when workflow push token is missing
+        if: steps.workflow_guard.outputs.can_push == 'false'
+        run: |
+          {
+            echo "Upstream sync needs a dedicated token to push workflow file changes."
+            echo
+            echo "- Add the repository secret \`UPSTREAM_SYNC_PUSH_TOKEN\`"
+            echo "- Use a classic PAT with \`repo\` and \`workflow\` scopes"
+            echo "- Workflow files in this sync:"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          printf '%s\n' "${{ steps.workflow_guard.outputs.workflow_files }}" >> "${GITHUB_STEP_SUMMARY}"
+          exit 1
+
+      - name: Push sync branch
+        if: steps.compare.outputs.has_changes == 'true' && steps.sync_branch.outputs.merge_conflict == 'false' && steps.workflow_guard.outputs.can_push == 'true'
+        env:
+          PUSH_TOKEN: ${{ secrets.UPSTREAM_SYNC_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${PUSH_TOKEN}" ]; then
+            git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          fi
+
           git push --force-with-lease origin "HEAD:refs/heads/${SYNC_BRANCH}"
 
       - name: Prepare PR body
-        if: steps.compare.outputs.has_changes == 'true' && steps.sync_branch.outputs.merge_conflict == 'false'
+        if: steps.compare.outputs.has_changes == 'true' && steps.sync_branch.outputs.merge_conflict == 'false' && steps.workflow_guard.outputs.can_push == 'true'
         run: |
           set -euo pipefail
 
@@ -204,7 +253,7 @@ jobs:
 
       - id: upsert_pr
         name: Create or update sync PR
-        if: steps.compare.outputs.has_changes == 'true' && steps.sync_branch.outputs.merge_conflict == 'false'
+        if: steps.compare.outputs.has_changes == 'true' && steps.sync_branch.outputs.merge_conflict == 'false' && steps.workflow_guard.outputs.can_push == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
