@@ -92,10 +92,33 @@ jobs:
 
           git checkout -B "${SYNC_BRANCH}" "origin/${BASE_BRANCH}"
 
+          keep_claude=false
+
+          if git ls-tree -r --name-only "origin/${BASE_BRANCH}" -- CLAUDE.md | grep -qx 'CLAUDE.md'; then
+            keep_claude=true
+          fi
+
+          if git ls-tree -r --name-only upstream/main -- CLAUDE.md | grep -qx 'CLAUDE.md'; then
+            echo "merge_conflict=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          git rm -f --ignore-unmatch CLAUDE.md
+          if ! git diff --cached --quiet -- CLAUDE.md; then
+            git commit -m "chore: drop fork claude guide before upstream merge"
+          fi
+
           if ! git merge --no-ff --no-edit upstream/main; then
             git merge --abort || true
             echo "merge_conflict=true" >> "${GITHUB_OUTPUT}"
             exit 0
+          fi
+
+          if [ "${keep_claude}" = true ]; then
+            git checkout "origin/${BASE_BRANCH}" -- CLAUDE.md
+            if ! git diff --cached --quiet -- CLAUDE.md; then
+              git commit -m "chore: restore fork claude guide"
+            fi
           fi
 
           {
