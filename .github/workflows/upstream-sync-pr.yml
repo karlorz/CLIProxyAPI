@@ -263,7 +263,8 @@ jobs:
                 -f title="${pr_title}" \
                 -f head="${head_ref}" \
                 -f base="${BASE_BRANCH}" \
-                -f body="$(cat pr-body.md)"
+                -f body="$(cat pr-body.md)" \
+                -F maintainer_can_modify=false
             })"
 
             {
