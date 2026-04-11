@@ -15,9 +15,7 @@ concurrency:
 
 env:
   BASE_BRANCH: main
-  SYNC_BRANCH: bot/upstream-sync
   UPSTREAM_BRANCH: main
-  UPSTREAM_REPO: router-for-me/CLIProxyAPI
   UPSTREAM_REPO_OWNER: router-for-me
   UPSTREAM_REMOTE_URL: https://github.com/router-for-me/CLIProxyAPI.git
 
@@ -75,54 +73,6 @@ jobs:
             echo "has_changes=true" >> "${GITHUB_OUTPUT}"
           fi
 
-      - name: Close stale sync PRs when nothing changed
-        if: steps.compare.outputs.has_changes == 'false'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO_OWNER: ${{ github.repository_owner }}
-        run: |
-          set -euo pipefail
-
-          retry_gh() {
-            local attempt=1
-            local max_attempts=5
-
-            while true; do
-              if "$@"; then
-                return 0
-              fi
-
-              if [ "${attempt}" -ge "${max_attempts}" ]; then
-                return 1
-              fi
-
-              sleep $((attempt * 3))
-              attempt=$((attempt + 1))
-            done
-          }
-
-          close_if_open() {
-            local head_ref="$1"
-            local pr_number
-
-            pr_number="$({
-              retry_gh gh api \
-                --method GET \
-                -H "Accept: application/vnd.github+json" \
-                "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=${BASE_BRANCH}&head=${head_ref}" \
-                --jq '.[0].number // ""'
-            })"
-
-            if [ -n "${pr_number}" ]; then
-              retry_gh gh pr close "${pr_number}" \
-                --repo "${GITHUB_REPOSITORY}" \
-                --comment "Closing stale upstream sync PR because the fork is already in sync."
-            fi
-          }
-
-          close_if_open "${REPO_OWNER}:${SYNC_BRANCH}"
-          close_if_open "${UPSTREAM_REPO_OWNER}:${UPSTREAM_BRANCH}"
-
       - name: No upstream changes
         if: steps.compare.outputs.has_changes == 'false'
         run: |
@@ -168,11 +118,10 @@ jobs:
           cat "${sync_error_file}" >&2
           exit "${sync_status}"
 
-      - name: Close stale sync PRs after automatic sync
-        if: steps.sync_upstream.outputs.sync_outcome == 'synced'
+      - name: Close obsolete conflict review PR
+        if: steps.compare.outputs.has_changes == 'false' || steps.sync_upstream.outputs.sync_outcome == 'synced'
         env:
           GH_TOKEN: ${{ github.token }}
-          REPO_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
 
@@ -194,27 +143,20 @@ jobs:
             done
           }
 
-          close_if_open() {
-            local head_ref="$1"
-            local pr_number
+          head_ref="${UPSTREAM_REPO_OWNER}:${UPSTREAM_BRANCH}"
+          pr_number="$({
+            retry_gh gh api \
+              --method GET \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=${BASE_BRANCH}&head=${head_ref}" \
+              --jq '.[0].number // empty'
+          })"
 
-            pr_number="$({
-              retry_gh gh api \
-                --method GET \
-                -H "Accept: application/vnd.github+json" \
-                "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=${BASE_BRANCH}&head=${head_ref}" \
-                --jq '.[0].number // ""'
-            })"
-
-            if [ -n "${pr_number}" ]; then
-              retry_gh gh pr close "${pr_number}" \
-                --repo "${GITHUB_REPOSITORY}" \
-                --comment "Closing stale upstream sync PR because automatic sync succeeded."
-            fi
-          }
-
-          close_if_open "${REPO_OWNER}:${SYNC_BRANCH}"
-          close_if_open "${UPSTREAM_REPO_OWNER}:${UPSTREAM_BRANCH}"
+          if [ -n "${pr_number}" ]; then
+            retry_gh gh pr close "${pr_number}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --comment "Closing upstream sync review PR because manual conflict resolution is no longer needed."
+          fi
 
       - name: Summarize automatic sync
         if: steps.sync_upstream.outputs.sync_outcome == 'synced'
@@ -228,19 +170,36 @@ jobs:
             echo "- Latest upstream tag: ${{ steps.compare.outputs.latest_upstream_tag || 'none' }}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Prepare PR body
+      - id: review_pr
+        name: Create or update conflict review PR
         if: steps.sync_upstream.outputs.sync_outcome == 'conflict'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          pr_title="chore: sync upstream main"
+          retry_gh() {
+            local attempt=1
+            local max_attempts=5
+
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge "${max_attempts}" ]; then
+                return 1
+              fi
+
+              sleep $((attempt * 3))
+              attempt=$((attempt + 1))
+            done
+          }
+
+          pr_title="chore: sync upstream ${UPSTREAM_BRANCH}"
           if [ -n "${{ steps.compare.outputs.latest_upstream_tag }}" ]; then
             pr_title="${pr_title} (${{ steps.compare.outputs.latest_upstream_tag }})"
           fi
-
-          {
-            echo "PR_TITLE=${pr_title}"
-          } >> "${GITHUB_ENV}"
 
           cat <<'EOF' > pr-body.md
           ## Summary
@@ -270,52 +229,12 @@ jobs:
           _Automatically generated by `upstream-sync-pr.yml`._
           EOF
 
-      - id: upsert_pr
-        name: Create or update sync PR
-        if: steps.sync_upstream.outputs.sync_outcome == 'conflict'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO_OWNER: ${{ github.repository_owner }}
-        run: |
-          set -euo pipefail
-
-          retry_gh() {
-            local attempt=1
-            local max_attempts=5
-
-            while true; do
-              if "$@"; then
-                return 0
-              fi
-
-              if [ "${attempt}" -ge "${max_attempts}" ]; then
-                return 1
-              fi
-
-              sleep $((attempt * 3))
-              attempt=$((attempt + 1))
-            done
-          }
-
-          legacy_pr="$({
-            retry_gh gh api \
-              --method GET \
-              -H "Accept: application/vnd.github+json" \
-              "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=${BASE_BRANCH}&head=${REPO_OWNER}:${SYNC_BRANCH}" \
-              --jq '.[0].number // ""'
-          })"
-
-          if [ -n "${legacy_pr}" ]; then
-            retry_gh gh pr close "${legacy_pr}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --comment "Closing legacy sync PR in favor of the upstream comparison PR."
-          fi
-
+          head_ref="${UPSTREAM_REPO_OWNER}:${UPSTREAM_BRANCH}"
           existing_pr_json="$({
             retry_gh gh api \
               --method GET \
               -H "Accept: application/vnd.github+json" \
-              "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=${BASE_BRANCH}&head=${UPSTREAM_REPO_OWNER}:${UPSTREAM_BRANCH}"
+              "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=${BASE_BRANCH}&head=${head_ref}"
           })"
 
           existing_pr="$(printf '%s' "${existing_pr_json}" | jq -r '.[0].number // empty')"
@@ -326,7 +245,7 @@ jobs:
                 --method PATCH \
                 -H "Accept: application/vnd.github+json" \
                 "/repos/${GITHUB_REPOSITORY}/pulls/${existing_pr}" \
-                -f title="${PR_TITLE}" \
+                -f title="${pr_title}" \
                 -f body="$(cat pr-body.md)"
             })"
 
@@ -341,8 +260,8 @@ jobs:
                 --method POST \
                 -H "Accept: application/vnd.github+json" \
                 "/repos/${GITHUB_REPOSITORY}/pulls" \
-                -f title="${PR_TITLE}" \
-                -f head="${UPSTREAM_REPO_OWNER}:${UPSTREAM_BRANCH}" \
+                -f title="${pr_title}" \
+                -f head="${head_ref}" \
                 -f base="${BASE_BRANCH}" \
                 -f body="$(cat pr-body.md)"
             })"
@@ -355,14 +274,14 @@ jobs:
           fi
 
       - name: Summarize conflict PR
-        if: steps.upsert_pr.outputs.pr_url != ''
+        if: steps.review_pr.outputs.pr_url != ''
         run: |
           {
             echo "Automatic upstream sync hit conflicts, so a review PR was ${{
-              steps.upsert_pr.outputs.pr_action
+              steps.review_pr.outputs.pr_action
             }}."
             echo
-            echo "- PR: ${{ steps.upsert_pr.outputs.pr_url }}"
+            echo "- PR: ${{ steps.review_pr.outputs.pr_url }}"
             echo "- Base branch: ${BASE_BRANCH}"
             echo "- Upstream branch: ${UPSTREAM_REPO_OWNER}:${UPSTREAM_BRANCH}"
             echo "- Latest upstream tag: ${{ steps.compare.outputs.latest_upstream_tag || 'none' }}"
