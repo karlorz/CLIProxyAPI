@@ -15,14 +15,20 @@ jobs:
         with:
           fetch-depth: 0
       - name: Detect internal/translator changes
-        id: changed-files
+        id: translator-files
         uses: tj-actions/changed-files@v45
         with:
           files: |
             internal/translator/**
-      - name: Fail when restricted paths change
-        if: steps.changed-files.outputs.any_changed == 'true'
+      - name: Detect non-translator changes
+        id: non-translator-files
+        uses: tj-actions/changed-files@v45
+        with:
+          files_ignore: |
+            internal/translator/**
+      - name: Fail when the PR changes only restricted paths
+        if: steps.translator-files.outputs.any_changed == 'true' && steps.non-translator-files.outputs.any_changed != 'true'
         run: |
-          echo "Changes under internal/translator are not allowed in pull requests."
-          echo "You need to create an issue for our maintenance team to make the necessary changes."
+          echo "Standalone pull requests that change only internal/translator are not allowed."
+          echo "Translator changes must be part of a broader change elsewhere in the repository."
           exit 1

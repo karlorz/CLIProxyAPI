@@ -1,0 +1,117 @@
+name: upstream-tag-sync
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-tag-sync
+  cancel-in-progress: false
+
+env:
+  BASE_BRANCH: main
+  UPSTREAM_BRANCH: main
+  UPSTREAM_REMOTE_URL: https://github.com/router-for-me/CLIProxyAPI.git
+
+jobs:
+  sync-latest-upstream-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Configure upstream remote
+        run: |
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream "${UPSTREAM_REMOTE_URL}"
+          else
+            git remote add upstream "${UPSTREAM_REMOTE_URL}"
+          fi
+
+      - name: Fetch origin and upstream tags
+        run: |
+          git fetch --force origin "${BASE_BRANCH}"
+          git fetch --force --tags origin
+          git fetch --force --tags upstream "${UPSTREAM_BRANCH}"
+
+      - id: latest_tag
+        name: Resolve latest reachable upstream tag
+        run: |
+          set -euo pipefail
+
+          latest_upstream_tag="$(
+            git tag --merged "upstream/${UPSTREAM_BRANCH}" --list 'v*' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V \
+              | tail -n 1 || true
+          )"
+
+          if [ -z "${latest_upstream_tag}" ]; then
+            echo "should_push=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if ! git merge-base --is-ancestor "refs/tags/${latest_upstream_tag}^{commit}" "origin/${BASE_BRANCH}"; then
+            {
+              echo "latest_upstream_tag=${latest_upstream_tag}"
+              echo "should_push=false"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if git ls-remote --tags origin "${latest_upstream_tag}" | grep -q .; then
+            {
+              echo "latest_upstream_tag=${latest_upstream_tag}"
+              echo "should_push=false"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          {
+            echo "latest_upstream_tag=${latest_upstream_tag}"
+            echo "should_push=true"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Push latest upstream tag to fork
+        if: steps.latest_tag.outputs.should_push == 'true'
+        run: |
+          set -euo pipefail
+
+          release_tag="${{ steps.latest_tag.outputs.latest_upstream_tag }}"
+          git fetch upstream "refs/tags/${release_tag}:refs/tags/${release_tag}" --force
+          git push origin "refs/tags/${release_tag}"
+
+      - name: Summarize result
+        run: |
+          if [ -z "${{ steps.latest_tag.outputs.latest_upstream_tag }}" ]; then
+            {
+              echo "No upstream semver tag was found."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          if [ "${{ steps.latest_tag.outputs.should_push }}" = "true" ]; then
+            {
+              echo "Synced latest upstream tag to the fork."
+              echo
+              echo "- Tag: ${{ steps.latest_tag.outputs.latest_upstream_tag }}"
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          {
+            echo "Latest reachable upstream tag is already present on the fork or is not yet reachable from \`${BASE_BRANCH}\`."
+            echo
+            echo "- Tag: ${{ steps.latest_tag.outputs.latest_upstream_tag }}"
+          } >> "${GITHUB_STEP_SUMMARY}"

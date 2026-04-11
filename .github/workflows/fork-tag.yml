@@ -1,0 +1,129 @@
+name: release-on-merge
+
+on:
+  pull_request_target:
+    types:
+      - closed
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Fork release tag to publish
+        required: true
+        type: string
+      target_sha:
+        description: Commit SHA to tag
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  publish:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.merged == true &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'bot/release-pr'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - id: resolve_release
+        name: Resolve release target
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            release_tag="${{ inputs.release_tag }}"
+            target_sha="${{ inputs.target_sha }}"
+          else
+            release_tag="$(
+              awk '
+                /^Release Tag: v[0-9][0-9.]*-[0-9][0-9]*$/ {
+                  sub(/^Release Tag: /, "")
+                  print
+                  exit
+                }
+              ' <<<"${PR_BODY}"
+            )"
+            target_sha="${PR_MERGE_SHA}"
+          fi
+
+          if [ -z "${release_tag}" ]; then
+            echo "Unable to resolve release tag." >&2
+            exit 1
+          fi
+
+          if ! printf '%s\n' "${release_tag}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$'; then
+            echo "Invalid release tag format: ${release_tag}" >&2
+            exit 1
+          fi
+
+          if [ -z "${target_sha}" ]; then
+            echo "Unable to resolve target commit SHA." >&2
+            exit 1
+          fi
+
+          {
+            echo "release_tag=${release_tag}"
+            echo "target_sha=${target_sha}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Fetch target commit and tags
+        run: |
+          git fetch --force --tags origin
+          git fetch origin "${{ steps.resolve_release.outputs.target_sha }}"
+
+      - id: create_tag
+        name: Create release tag
+        run: |
+          set -euo pipefail
+
+          release_tag="${{ steps.resolve_release.outputs.release_tag }}"
+          target_sha="${{ steps.resolve_release.outputs.target_sha }}"
+
+          if git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null; then
+            echo "Tag already exists: ${release_tag}"
+            echo "created_new_tag=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          git tag -a "${release_tag}" "${target_sha}" -m "Fork release ${release_tag}"
+          git push origin "refs/tags/${release_tag}"
+          echo "created_new_tag=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Dispatch release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release.yaml \
+            --repo "${GITHUB_REPOSITORY}" \
+            -f release_tag="${{ steps.resolve_release.outputs.release_tag }}"
+
+      - name: Dispatch docker workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run docker-image.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            -f release_tag="${{ steps.resolve_release.outputs.release_tag }}"
+
+      - name: Delete release PR branch
+        if: github.event_name == 'pull_request_target'
+        continue-on-error: true
+        run: |
+          git push origin --delete bot/release-pr

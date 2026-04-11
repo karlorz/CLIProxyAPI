@@ -1,0 +1,282 @@
+name: release-pr
+
+on:
+  schedule:
+    - cron: '43 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-pr
+  cancel-in-progress: false
+
+env:
+  BASE_BRANCH: main
+  RELEASE_BRANCH: bot/release-pr
+  UPSTREAM_REMOTE_URL: https://github.com/router-for-me/CLIProxyAPI.git
+
+jobs:
+  draft-release-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Configure upstream remote
+        run: |
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream "${UPSTREAM_REMOTE_URL}"
+          else
+            git remote add upstream "${UPSTREAM_REMOTE_URL}"
+          fi
+
+      - name: Fetch origin and upstream tags
+        run: |
+          git fetch --force origin "${BASE_BRANCH}"
+          git fetch --force --tags origin
+          git fetch --force --tags upstream main
+
+      - id: plan_release
+        name: Determine release draft state
+        run: |
+          set -euo pipefail
+
+          base_ref="origin/${BASE_BRANCH}"
+          last_release_tag="$(
+            git tag --merged "${base_ref}" --list 'v*.*.*-*' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$' \
+              | sort -V \
+              | tail -n 1 || true
+          )"
+          latest_upstream_tag="$(
+            git tag --merged "${base_ref}" --list 'v*' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V \
+              | tail -n 1 || true
+          )"
+
+          if [ -n "${last_release_tag}" ]; then
+            unreleased_count="$(git rev-list --count "${last_release_tag}..${base_ref}")"
+          else
+            unreleased_count="$(git rev-list --count "${base_ref}")"
+          fi
+
+          if [ "${unreleased_count}" -eq 0 ]; then
+            {
+              echo "has_changes=false"
+              echo "last_release_tag=${last_release_tag}"
+              echo "latest_upstream_tag=${latest_upstream_tag}"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [ -z "${latest_upstream_tag}" ]; then
+            echo "No reachable upstream semantic version tag was found for ${base_ref}." >&2
+            exit 1
+          fi
+
+          escaped_upstream_tag="${latest_upstream_tag//./\\.}"
+          highest_suffix="$(
+            git tag --list "${latest_upstream_tag}-*" \
+              | grep -E "^${escaped_upstream_tag}-[0-9]+$" \
+              | sed "s/^${latest_upstream_tag}-//" \
+              | sort -n \
+              | tail -n 1 || true
+          )"
+
+          if [ -n "${highest_suffix}" ]; then
+            next_suffix=$((highest_suffix + 1))
+          else
+            next_suffix=0
+          fi
+
+          release_tag="${latest_upstream_tag}-${next_suffix}"
+
+          {
+            echo "has_changes=true"
+            echo "release_tag=${release_tag}"
+            echo "last_release_tag=${last_release_tag}"
+            echo "latest_upstream_tag=${latest_upstream_tag}"
+            echo "unreleased_count=${unreleased_count}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Close stale release PR when nothing changed
+        if: steps.plan_release.outputs.has_changes == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          existing_pr="$(
+            gh pr list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --state open \
+              --base "${BASE_BRANCH}" \
+              --head "${RELEASE_BRANCH}" \
+              --json number \
+              --jq '.[0].number // ""'
+          )"
+
+          if [ -n "${existing_pr}" ]; then
+            gh pr close "${existing_pr}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --comment "Closing stale release draft because there are no unreleased changes."
+          fi
+
+          {
+            echo "No unreleased changes found for a release draft."
+            echo
+            echo "- Base branch: ${BASE_BRANCH}"
+            echo "- Last release tag: ${{ steps.plan_release.outputs.last_release_tag || 'none' }}"
+            echo "- Latest reachable upstream tag: ${{ steps.plan_release.outputs.latest_upstream_tag || 'none' }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Build release draft branch
+        if: steps.plan_release.outputs.has_changes == 'true'
+        run: |
+          set -euo pipefail
+
+          git checkout -B "${RELEASE_BRANCH}" "origin/${BASE_BRANCH}"
+          git commit --allow-empty -m "release: ${{ steps.plan_release.outputs.release_tag }}"
+          git push --force-with-lease origin "HEAD:refs/heads/${RELEASE_BRANCH}"
+
+      - name: Prepare release PR body
+        if: steps.plan_release.outputs.has_changes == 'true'
+        run: |
+          set -euo pipefail
+
+          if [ -n "${{ steps.plan_release.outputs.last_release_tag }}" ]; then
+            commit_range="${{ steps.plan_release.outputs.last_release_tag }}..origin/${BASE_BRANCH}"
+          else
+            commit_range="origin/${BASE_BRANCH}"
+          fi
+
+          {
+            echo "PR_TITLE=release: ${{ steps.plan_release.outputs.release_tag }}"
+            echo "RELEASE_TAG=${{ steps.plan_release.outputs.release_tag }}"
+          } >> "${GITHUB_ENV}"
+
+          cat <<'EOF' > pr-body.md
+          ## Summary
+
+          Draft release review for this fork.
+
+          Release Tag: ${{ steps.plan_release.outputs.release_tag }}
+          Base Upstream Tag: ${{ steps.plan_release.outputs.latest_upstream_tag }}
+          Previous Fork Release: ${{ steps.plan_release.outputs.last_release_tag || 'none' }}
+          Unreleased Commit Count: ${{ steps.plan_release.outputs.unreleased_count }}
+
+          ## Review Notes
+
+          - This PR is intentionally kept as a draft until release is approved.
+          - Review the commit summary below before marking ready and merging.
+          - Merging this PR is the approval step that creates the tag and dispatches the GitHub release and Docker publish workflows.
+
+          ## Unreleased Commits On Main
+
+          ```text
+          EOF
+
+          git log --oneline --no-decorate --max-count=80 "${commit_range}" >> pr-body.md
+
+          cat <<'EOF' >> pr-body.md
+          ```
+
+          _Automatically generated by `release-pr.yml`._
+          EOF
+
+      - id: upsert_pr
+        name: Create or update draft release PR
+        if: steps.plan_release.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+
+          retry_gh() {
+            local attempt=1
+            local max_attempts=5
+
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge "${max_attempts}" ]; then
+                return 1
+              fi
+
+              sleep $((attempt * 3))
+              attempt=$((attempt + 1))
+            done
+          }
+
+          existing_pr_json="$(
+            retry_gh gh pr list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --state open \
+              --base "${BASE_BRANCH}" \
+              --head "${REPO_OWNER}:${RELEASE_BRANCH}" \
+              --json number,url \
+              --jq '.[0] // {}'
+          )"
+
+          existing_pr="$(printf '%s' "${existing_pr_json}" | jq -r '.number // empty')"
+          existing_url="$(printf '%s' "${existing_pr_json}" | jq -r '.url // empty')"
+
+          if [ -n "${existing_pr}" ]; then
+            retry_gh gh pr edit "${existing_pr}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${PR_TITLE}" \
+              --body-file pr-body.md
+
+            retry_gh gh pr ready "${existing_pr}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --undo || true
+
+            {
+              echo "pr_number=${existing_pr}"
+              echo "pr_url=${existing_url}"
+              echo "pr_action=updated"
+            } >> "${GITHUB_OUTPUT}"
+          else
+            pr_url="$(
+              retry_gh gh pr create \
+                --repo "${GITHUB_REPOSITORY}" \
+                --base "${BASE_BRANCH}" \
+                --head "${REPO_OWNER}:${RELEASE_BRANCH}" \
+                --title "${PR_TITLE}" \
+                --body-file pr-body.md \
+                --draft
+            )"
+
+            {
+              echo "pr_number=$(basename "${pr_url}")"
+              echo "pr_url=${pr_url}"
+              echo "pr_action=created"
+            } >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Summarize release draft
+        if: steps.upsert_pr.outputs.pr_url != ''
+        run: |
+          {
+            echo "Release draft PR ${{
+              steps.upsert_pr.outputs.pr_action
+            }} successfully."
+            echo
+            echo "- PR: ${{ steps.upsert_pr.outputs.pr_url }}"
+            echo "- Release tag: ${{ steps.plan_release.outputs.release_tag }}"
+            echo "- Previous fork release: ${{ steps.plan_release.outputs.last_release_tag || 'none' }}"
+            echo "- Base upstream tag: ${{ steps.plan_release.outputs.latest_upstream_tag }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
