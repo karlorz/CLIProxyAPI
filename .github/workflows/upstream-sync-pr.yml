@@ -92,7 +92,12 @@ jobs:
 
           git checkout -B "${SYNC_BRANCH}" "origin/${BASE_BRANCH}"
 
+          keep_agents=false
           keep_claude=false
+
+          if git ls-tree -r --name-only "origin/${BASE_BRANCH}" -- AGENTS.md | grep -qx 'AGENTS.md'; then
+            keep_agents=true
+          fi
 
           if git ls-tree -r --name-only "origin/${BASE_BRANCH}" -- CLAUDE.md | grep -qx 'CLAUDE.md'; then
             keep_claude=true
@@ -103,9 +108,9 @@ jobs:
             exit 0
           fi
 
-          git rm -f --ignore-unmatch CLAUDE.md
-          if ! git diff --cached --quiet -- CLAUDE.md; then
-            git commit -m "chore: drop fork claude guide before upstream merge"
+          git rm -f --ignore-unmatch AGENTS.md CLAUDE.md
+          if ! git diff --cached --quiet -- AGENTS.md CLAUDE.md; then
+            git commit -m "chore: drop fork agent guides before upstream merge"
           fi
 
           if ! git merge --no-ff --no-edit upstream/main; then
@@ -114,10 +119,20 @@ jobs:
             exit 0
           fi
 
+          restored_files=()
+
+          if [ "${keep_agents}" = true ]; then
+            restored_files+=(AGENTS.md)
+          fi
+
           if [ "${keep_claude}" = true ]; then
-            git checkout "origin/${BASE_BRANCH}" -- CLAUDE.md
-            if ! git diff --cached --quiet -- CLAUDE.md; then
-              git commit -m "chore: restore fork claude guide"
+            restored_files+=(CLAUDE.md)
+          fi
+
+          if [ "${#restored_files[@]}" -gt 0 ]; then
+            git checkout "origin/${BASE_BRANCH}" -- "${restored_files[@]}"
+            if ! git diff --cached --quiet -- "${restored_files[@]}"; then
+              git commit -m "chore: restore fork agent guides"
             fi
           fi
 
