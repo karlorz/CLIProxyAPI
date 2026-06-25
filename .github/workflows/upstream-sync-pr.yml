@@ -8,7 +8,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  workflows: write
 
 concurrency:
   group: upstream-sync-pr
@@ -111,7 +110,11 @@ jobs:
             exit 0
           fi
 
-          if grep -q 'HTTP 409' "${sync_error_file}"; then
+          # merge-upstream returns 409 when upstream and fork have diverged
+          # conflicts, and 422 when upstream includes workflow file changes
+          # (GITHUB_TOKEN cannot modify workflows via the merge-upstream API).
+          # Both cases require manual review via a conflict review PR.
+          if grep -qE 'HTTP (409|422)' "${sync_error_file}"; then
             echo "sync_outcome=conflict" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
