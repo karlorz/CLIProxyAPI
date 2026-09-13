@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
@@ -19,6 +20,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
+
+// pluginLifecycleCallTimeout bounds plugin.register / plugin.reconfigure RPCs
+// during ApplyConfig so a hung plugin cannot block HTTP listen.
+var pluginLifecycleCallTimeout = 15 * time.Second
 
 type loadedPlugin struct {
 	id         string
@@ -944,6 +949,14 @@ func (h *Host) rollbackReplacement(lp *loadedPlugin, item runtimeItemConfig) (ca
 func (h *Host) callRegister(ctx context.Context, lp *loadedPlugin, item runtimeItemConfig) (pluginapi.Plugin, bool) {
 	if lp == nil {
 		return pluginapi.Plugin{}, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline && pluginLifecycleCallTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, pluginLifecycleCallTimeout)
+		defer cancel()
 	}
 
 	method := pluginabi.MethodPluginRegister

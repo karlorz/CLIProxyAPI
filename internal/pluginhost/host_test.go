@@ -630,6 +630,74 @@ func TestHostApplyConfig_ReconfigureCalledOnReload(t *testing.T) {
 	}
 }
 
+type hangingReconfigureClient struct {
+	inner pluginClient
+	abort <-chan struct{}
+}
+
+func (c hangingReconfigureClient) Call(ctx context.Context, method string, request []byte) ([]byte, error) {
+	if method == pluginabi.MethodPluginReconfigure {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-c.abort:
+			return nil, context.Canceled
+		}
+	}
+	return c.inner.Call(ctx, method, request)
+}
+
+func (c hangingReconfigureClient) Shutdown() {
+	c.inner.Shutdown()
+}
+
+func TestHostApplyConfig_HangingReconfigureDoesNotBlockListenPath(t *testing.T) {
+	loader := newTestSymbolLoader()
+	plugin := &testPlugin{
+		registerResult:    validTestPlugin("alpha"),
+		reconfigureResult: validTestPlugin("alpha"),
+	}
+	loader.lookups["alpha"] = newTestSymbolLookup(plugin)
+	h := NewForTest(loader)
+	abort := make(chan struct{})
+	t.Cleanup(func() {
+		close(abort)
+		h.ShutdownAll()
+	})
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     makePluginDir(t, "alpha"),
+			Configs: enabledPluginConfigs("alpha"),
+		},
+	}
+
+	h.ApplyConfig(context.Background(), cfg)
+	h.mu.Lock()
+	lp := h.loaded["alpha"]
+	if lp == nil || lp.client == nil {
+		h.mu.Unlock()
+		t.Fatal("expected loaded plugin client after initial ApplyConfig")
+	}
+	lp.client = hangingReconfigureClient{inner: lp.client, abort: abort}
+	h.mu.Unlock()
+
+	previousTimeout := pluginLifecycleCallTimeout
+	pluginLifecycleCallTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { pluginLifecycleCallTimeout = previousTimeout })
+
+	done := make(chan struct{})
+	go func() {
+		h.ApplyConfig(context.Background(), cfg)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ApplyConfig blocked on hanging plugin.reconfigure")
+	}
+}
+
 func TestHostApplyConfigLogsLoadedAndRegisteredOnlyOnInitialLoad(t *testing.T) {
 	var out bytes.Buffer
 	originalOut := log.StandardLogger().Out
