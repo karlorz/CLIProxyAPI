@@ -361,10 +361,22 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 			if loadedNow {
 				continue
 			}
-			var okCall bool
-			plugin, okCall = h.callRegister(ctx, lp, item)
-			if !okCall {
-				continue
+			h.mu.Lock()
+			unchanged := lp != nil && lp.registered &&
+				cleanPluginPath(lp.path) == cleanPluginPath(file.Path) &&
+				bytes.Equal(bytes.TrimSpace(lp.configYAML), bytes.TrimSpace(item.ConfigYAML)) &&
+				validPlugin(lp.plugin)
+			if unchanged {
+				plugin = lp.plugin
+			}
+			h.mu.Unlock()
+
+			if !unchanged {
+				var okCall bool
+				plugin, okCall = h.callRegister(ctx, lp, item)
+				if !okCall {
+					continue
+				}
 			}
 		}
 		plugin.Metadata = clonePluginMetadata(plugin.Metadata)

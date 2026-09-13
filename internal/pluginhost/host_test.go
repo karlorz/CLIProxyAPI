@@ -20,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"gopkg.in/yaml.v3"
 )
 
 func enabledPluginConfigs(ids ...string) map[string]config.PluginInstanceConfig {
@@ -290,8 +291,8 @@ func TestHostUnloadPluginTargetsOnlyRequestedPlugin(t *testing.T) {
 	if bravo.registerCalls != 1 {
 		t.Fatalf("bravo register calls = %d, want 1", bravo.registerCalls)
 	}
-	if bravo.reconfigureCalls != 1 {
-		t.Fatalf("bravo reconfigure calls = %d, want 1", bravo.reconfigureCalls)
+	if bravo.reconfigureCalls != 0 {
+		t.Fatalf("bravo reconfigure calls = %d, want 0 when bravo yaml is unchanged", bravo.reconfigureCalls)
 	}
 }
 
@@ -619,14 +620,96 @@ func TestHostApplyConfig_ReconfigureCalledOnReload(t *testing.T) {
 	if plugin.registerCalls != 1 {
 		t.Fatalf("Register calls = %d, want 1", plugin.registerCalls)
 	}
-	if plugin.reconfigureCalls != 1 {
-		t.Fatalf("Reconfigure calls = %d, want 1", plugin.reconfigureCalls)
+	if plugin.reconfigureCalls != 0 {
+		t.Fatalf("Reconfigure calls = %d, want 0 after identical config reload", plugin.reconfigureCalls)
 	}
 	if loader.openCalls != 1 {
 		t.Fatalf("Open calls = %d, want 1", loader.openCalls)
 	}
 	if len(h.activeRecords()) != 1 {
 		t.Fatalf("Snapshot records = %d, want 1", len(h.activeRecords()))
+	}
+
+	changedCfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     cfg.Plugins.Dir,
+			Configs: map[string]config.PluginInstanceConfig{
+				"alpha": {
+					Enabled: cfg.Plugins.Configs["alpha"].Enabled,
+					Raw: yaml.Node{
+						Kind: yaml.MappingNode,
+						Tag:  "!!map",
+						Content: []*yaml.Node{
+							{Kind: yaml.ScalarNode, Tag: "!!str", Value: "custom-setting"},
+							{Kind: yaml.ScalarNode, Tag: "!!str", Value: "updated-value"},
+						},
+					},
+				},
+			},
+		},
+	}
+	h.ApplyConfig(context.Background(), changedCfg)
+
+	if plugin.reconfigureCalls != 1 {
+		t.Fatalf("Reconfigure calls = %d, want 1 after changed config reload", plugin.reconfigureCalls)
+	}
+	if len(h.activeRecords()) != 1 {
+		t.Fatalf("Snapshot records = %d, want 1 after changed config reload", len(h.activeRecords()))
+	}
+}
+
+func TestHostApplyConfig_UnchangedYAMLKeepsRegisteredWhenReconfigureWouldHang(t *testing.T) {
+	loader := newTestSymbolLoader()
+	plugin := &testPlugin{
+		registerResult:    validTestPlugin("alpha"),
+		reconfigureResult: validTestPlugin("alpha"),
+	}
+	loader.lookups["alpha"] = newTestSymbolLookup(plugin)
+	h := NewForTest(loader)
+	abort := make(chan struct{})
+	t.Cleanup(func() {
+		close(abort)
+		h.ShutdownAll()
+	})
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     makePluginDir(t, "alpha"),
+			Configs: enabledPluginConfigs("alpha"),
+		},
+	}
+
+	h.ApplyConfig(context.Background(), cfg)
+	h.mu.Lock()
+	lp := h.loaded["alpha"]
+	if lp == nil || lp.client == nil {
+		h.mu.Unlock()
+		t.Fatal("expected loaded plugin client after initial ApplyConfig")
+	}
+	lp.client = hangingReconfigureClient{inner: lp.client, abort: abort}
+	h.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		h.ApplyConfig(context.Background(), cfg)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ApplyConfig blocked on hanging plugin.reconfigure for unchanged config")
+	}
+
+	if len(h.activeRecords()) != 1 {
+		t.Fatalf("activeRecords len = %d, want 1", len(h.activeRecords()))
+	}
+	if len(h.RegisteredPlugins()) != 1 {
+		t.Fatalf("RegisteredPlugins len = %d, want 1", len(h.RegisteredPlugins()))
+	}
+	if plugin.reconfigureCalls != 0 {
+		t.Fatalf("Reconfigure calls = %d, want 0", plugin.reconfigureCalls)
 	}
 }
 
@@ -686,9 +769,29 @@ func TestHostApplyConfig_HangingReconfigureDoesNotBlockListenPath(t *testing.T) 
 	pluginLifecycleCallTimeout = 40 * time.Millisecond
 	t.Cleanup(func() { pluginLifecycleCallTimeout = previousTimeout })
 
+	changedCfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     cfg.Plugins.Dir,
+			Configs: map[string]config.PluginInstanceConfig{
+				"alpha": {
+					Enabled: cfg.Plugins.Configs["alpha"].Enabled,
+					Raw: yaml.Node{
+						Kind: yaml.MappingNode,
+						Tag:  "!!map",
+						Content: []*yaml.Node{
+							{Kind: yaml.ScalarNode, Tag: "!!str", Value: "trigger-reconfigure"},
+							{Kind: yaml.ScalarNode, Tag: "!!str", Value: "true"},
+						},
+					},
+				},
+			},
+		},
+	}
+
 	done := make(chan struct{})
 	go func() {
-		h.ApplyConfig(context.Background(), cfg)
+		h.ApplyConfig(context.Background(), changedCfg)
 		close(done)
 	}()
 	select {
@@ -1146,7 +1249,6 @@ func TestHostApplyConfigSerializesLifecycleDuringQuiesce(t *testing.T) {
 		"old." + pluginabi.MethodPluginRegister,
 		"old." + pluginabi.MethodPluginQuiesce,
 		"replacement." + pluginabi.MethodPluginRegister,
-		"replacement." + pluginabi.MethodPluginReconfigure,
 	}; !slices.Equal(got, want) {
 		t.Fatalf("lifecycle events = %v, want %v", got, want)
 	}
@@ -1463,9 +1565,28 @@ func TestHostApplyConfig_PanicFusesPluginForProcessLifetime(t *testing.T) {
 	}
 
 	h.ApplyConfig(context.Background(), cfg)
-	h.ApplyConfig(context.Background(), cfg)
+	changedCfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     cfg.Plugins.Dir,
+			Configs: map[string]config.PluginInstanceConfig{
+				"alpha": {
+					Enabled: cfg.Plugins.Configs["alpha"].Enabled,
+					Raw: yaml.Node{
+						Kind: yaml.MappingNode,
+						Tag:  "!!map",
+						Content: []*yaml.Node{
+							{Kind: yaml.ScalarNode, Tag: "!!str", Value: "trigger-reconfigure"},
+							{Kind: yaml.ScalarNode, Tag: "!!str", Value: "true"},
+						},
+					},
+				},
+			},
+		},
+	}
+	h.ApplyConfig(context.Background(), changedCfg)
 	plugin.panicOnReload = false
-	h.ApplyConfig(context.Background(), cfg)
+	h.ApplyConfig(context.Background(), changedCfg)
 
 	if plugin.registerCalls != 1 {
 		t.Fatalf("Register calls = %d, want 1", plugin.registerCalls)
@@ -1555,9 +1676,28 @@ func TestHostApplyConfigSerializesLifecycleCalls(t *testing.T) {
 	}()
 	waitForHostTestSignal(t, started, "first register start")
 
+	changedCfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     cfg.Plugins.Dir,
+			Configs: map[string]config.PluginInstanceConfig{
+				"alpha": {
+					Enabled: cfg.Plugins.Configs["alpha"].Enabled,
+					Raw: yaml.Node{
+						Kind: yaml.MappingNode,
+						Tag:  "!!map",
+						Content: []*yaml.Node{
+							{Kind: yaml.ScalarNode, Tag: "!!str", Value: "trigger-reconfigure"},
+							{Kind: yaml.ScalarNode, Tag: "!!str", Value: "true"},
+						},
+					},
+				},
+			},
+		},
+	}
 	secondDone := make(chan struct{})
 	go func() {
-		h.ApplyConfig(context.Background(), cfg)
+		h.ApplyConfig(context.Background(), changedCfg)
 		close(secondDone)
 	}()
 	select {
