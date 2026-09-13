@@ -180,6 +180,9 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
 			return walkErr
 		}
 		if d.IsDir() {
+			if SkipNestedHiddenAuthDir(dir, path, d) {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
@@ -198,6 +201,21 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
 		return nil, err
 	}
 	return entries, nil
+}
+
+// SkipNestedHiddenAuthDir reports whether WalkDir should skip a nested hidden
+// directory. Plugin state lives in {authDir}/.cpa-account-config-manager/ and
+// must not be ingested as credentials. The walk root itself may be a hidden
+// path such as /root/.cli-proxy-api and must still be scanned.
+func SkipNestedHiddenAuthDir(root, path string, d fs.DirEntry) bool {
+	if d == nil || !d.IsDir() {
+		return false
+	}
+	if filepath.Clean(path) == filepath.Clean(root) {
+		return false
+	}
+	name := d.Name()
+	return strings.HasPrefix(name, ".") && name != "." && name != ".."
 }
 
 // Delete removes the auth file.

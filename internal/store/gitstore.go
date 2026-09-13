@@ -22,6 +22,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
 	"github.com/go-git/go-git/v6/storage/filesystem/dotgit"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -520,6 +521,9 @@ func (s *GitTokenStore) List(_ context.Context) ([]*cliproxyauth.Auth, error) {
 			return walkErr
 		}
 		if d.IsDir() {
+			if sdkAuth.SkipNestedHiddenAuthDir(dir, path, d) {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {

@@ -367,6 +367,65 @@ func TestFileTokenStoreListAppliesSourceDisabledToPluginMultiAuths(t *testing.T)
 	}
 }
 
+func TestFileTokenStoreListSkipsNestedHiddenPluginState(t *testing.T) {
+	baseDir := t.TempDir()
+	if errWrite := os.WriteFile(filepath.Join(baseDir, "codex.json"), []byte(`{"type":"codex","access_token":"token"}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+	pluginDir := filepath.Join(baseDir, ".cpa-account-config-manager")
+	nested := filepath.Join(pluginDir, "runtime-instances", "abc", "def.json")
+	if errMkdir := os.MkdirAll(filepath.Dir(nested), 0o755); errMkdir != nil {
+		t.Fatalf("mkdir plugin state: %v", errMkdir)
+	}
+	if errWrite := os.WriteFile(filepath.Join(pluginDir, "default-policy.json"), []byte(`{"version":2,"policy":{}}`), 0o600); errWrite != nil {
+		t.Fatalf("write default-policy: %v", errWrite)
+	}
+	if errWrite := os.WriteFile(nested, []byte(`{"version":1}`), 0o600); errWrite != nil {
+		t.Fatalf("write runtime instance: %v", errWrite)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auths, errList := store.List(context.Background())
+	if errList != nil {
+		t.Fatalf("List() error = %v", errList)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("List() len = %d, want only the real credential", len(auths))
+	}
+	if auths[0].ID != "codex.json" {
+		t.Fatalf("List() id = %q, want codex.json", auths[0].ID)
+	}
+}
+
+func TestFileTokenStoreListStillReadsWhenAuthDirIsHidden(t *testing.T) {
+	parent := t.TempDir()
+	baseDir := filepath.Join(parent, ".cli-proxy-api")
+	if errMkdir := os.Mkdir(baseDir, 0o755); errMkdir != nil {
+		t.Fatalf("mkdir hidden auth dir: %v", errMkdir)
+	}
+	if errWrite := os.WriteFile(filepath.Join(baseDir, "codex.json"), []byte(`{"type":"codex","access_token":"token"}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+	pluginDir := filepath.Join(baseDir, ".cpa-account-config-manager")
+	if errMkdir := os.Mkdir(pluginDir, 0o755); errMkdir != nil {
+		t.Fatalf("mkdir plugin state: %v", errMkdir)
+	}
+	if errWrite := os.WriteFile(filepath.Join(pluginDir, "default-policy.json"), []byte(`{"version":2,"policy":{}}`), 0o600); errWrite != nil {
+		t.Fatalf("write default-policy: %v", errWrite)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auths, errList := store.List(context.Background())
+	if errList != nil {
+		t.Fatalf("List() error = %v", errList)
+	}
+	if len(auths) != 1 || auths[0].ID != "codex.json" {
+		t.Fatalf("List() = %#v, want only codex.json from a hidden auth dir", auths)
+	}
+}
+
 func TestFileTokenStoreListPluginHandledEmptySuppressesBuiltin(t *testing.T) {
 	baseDir := t.TempDir()
 	path := filepath.Join(baseDir, "codex.json")
