@@ -42,6 +42,7 @@ type captureExecutor struct {
 	responseBody io.ReadCloser
 	statusCode   int
 	statuses     []int
+	location     string
 	httpCalls    atomic.Int32
 	refreshCalls atomic.Int32
 	beforeReturn func()
@@ -93,6 +94,10 @@ func (e *captureExecutor) HttpRequest(_ context.Context, credential *auth.Auth, 
 	if statusCode == 0 {
 		statusCode = http.StatusCreated
 	}
+	location := e.location
+	if location == "" {
+		location = "/v1/live/call-123"
+	}
 	responseBody := e.responseBody
 	if statusCode == http.StatusUnauthorized && httpCall < len(e.statuses) {
 		responseBody = io.NopCloser(strings.NewReader("unauthorized"))
@@ -105,7 +110,7 @@ func (e *captureExecutor) HttpRequest(_ context.Context, credential *auth.Auth, 
 		Header: http.Header{
 			"Connection":          []string{"X-Connection-Secret"},
 			"Content-Type":        []string{"application/sdp"},
-			"Location":            []string{"/v1/live/call-123"},
+			"Location":            []string{location},
 			"Set-Cookie":          []string{"session=secret"},
 			"X-Connection-Secret": []string{"secret"},
 			"X-Live-Session":      []string{"live-session-123"},
@@ -411,6 +416,53 @@ func TestHandlerRewritesLiveCallAndSchedulesOAuth(t *testing.T) {
 	}
 	stored, ok := handler.sessions.peek("call-123")
 	if !ok || stored.authID != "codex-oauth" || stored.model != "gpt-live-1-codex" {
+		t.Fatalf("stored live session = %#v, ok=%t", stored, ok)
+	}
+}
+
+func TestHandleRewritesAbsoluteOpenAILiveLocation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	manager := auth.NewManager(nil, &apiKeyFirstSelector{}, nil)
+	executor := &captureExecutor{
+		responseBody: io.NopCloser(strings.NewReader("v=0\r\na=ice-lite\r\n")),
+		location:     "https://api.openai.com/v1/live/rtc_u23_example",
+	}
+	manager.RegisterExecutor(executor)
+	registerCredential(t, manager, &auth.Auth{
+		ID:       "codex-oauth",
+		Provider: "codex",
+		Status:   auth.StatusActive,
+		Metadata: map[string]any{
+			"access_token": "oauth-token",
+			"account_id":   "account-123",
+		},
+	})
+
+	handler := NewHandler(manager, nil)
+	router := gin.New()
+	router.POST("/v1/live", handler.Handle)
+
+	const boundary = "codex-realtime-call-boundary"
+	body := multipartBody(boundary, "v=0\r\na=setup:actpass", `{"model":"gpt-live-1-codex"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/live", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer downstream-api-key")
+	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+	req.Header.Set("OpenAI-Alpha", "quicksilver=v2")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Location"); got != "/v1/live/rtc_u23_example" {
+		t.Fatalf("Location = %q, want rewritten relative live path", got)
+	}
+	if got := executor.request.Header.Get("OpenAI-Alpha"); got != "quicksilver=v2" {
+		t.Fatalf("OpenAI-Alpha = %q, want quicksilver=v2", got)
+	}
+	stored, ok := handler.sessions.peek("rtc_u23_example")
+	if !ok || stored.authID != "codex-oauth" {
 		t.Fatalf("stored live session = %#v, ok=%t", stored, ok)
 	}
 }

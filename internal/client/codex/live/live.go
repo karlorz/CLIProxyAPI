@@ -394,8 +394,12 @@ func (h *Handler) Handle(c *gin.Context) {
 		if mediaSession != nil {
 			mediaSession.SetCallID(callID)
 		}
-		if callID != "" && strings.HasPrefix(c.Request.URL.Path, "/v1/realtime") {
-			responseHeaders.Set("Location", "/v1/realtime/calls/"+callID)
+		if callID != "" {
+			if strings.HasPrefix(c.Request.URL.Path, "/v1/realtime") {
+				responseHeaders.Set("Location", "/v1/realtime/calls/"+callID)
+			} else {
+				responseHeaders.Set("Location", "/v1/live/"+callID)
+			}
 		}
 	}
 	if success && mediaSession != nil {
