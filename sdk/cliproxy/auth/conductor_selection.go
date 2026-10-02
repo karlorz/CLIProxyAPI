@@ -79,6 +79,7 @@ type authSelectionEligibility struct {
 	requiredKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
+	excludedModel    string
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -98,7 +99,10 @@ func credentialPolicyFromContext(ctx context.Context) string {
 }
 
 func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
-	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata)}
+	eligibility := authSelectionEligibility{
+		disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata),
+		excludedModel:    stringMetadataValue(opts.Metadata, cliproxyexecutor.ExcludedModelSelectionMetadataKey),
+	}
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
@@ -113,10 +117,61 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
 		return false
 	}
+	if authExcludesModel(auth, e.excludedModel) {
+		return false
+	}
 	if e.credentialPolicy != "" && !credentialPolicyAllows(e.credentialPolicy, auth) {
 		return false
 	}
 	return !e.disallowFreeAuth || !isFreeCodexAuth(auth)
+}
+
+func authExcludesModel(auth *Auth, model string) bool {
+	if auth == nil || strings.TrimSpace(model) == "" || auth.Attributes == nil {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(model))
+	for _, rawPattern := range strings.Split(auth.Attributes["excluded_models"], ",") {
+		pattern := strings.ToLower(strings.TrimSpace(rawPattern))
+		if matchExcludedModelPattern(pattern, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchExcludedModelPattern(pattern, value string) bool {
+	if pattern == "" {
+		return false
+	}
+	if !strings.Contains(pattern, "*") {
+		return pattern == value
+	}
+
+	parts := strings.Split(pattern, "*")
+	if prefix := parts[0]; prefix != "" {
+		if !strings.HasPrefix(value, prefix) {
+			return false
+		}
+		value = value[len(prefix):]
+	}
+	if suffix := parts[len(parts)-1]; suffix != "" {
+		if !strings.HasSuffix(value, suffix) {
+			return false
+		}
+		value = value[:len(value)-len(suffix)]
+	}
+	for _, segment := range parts[1 : len(parts)-1] {
+		if segment == "" {
+			continue
+		}
+		index := strings.Index(value, segment)
+		if index < 0 {
+			return false
+		}
+		value = value[index+len(segment):]
+	}
+	return true
 }
 
 func (m *Manager) syncSchedulerFromSnapshot(auths []*Auth) {
