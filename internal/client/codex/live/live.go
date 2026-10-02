@@ -297,6 +297,7 @@ func (h *Handler) Handle(c *gin.Context) {
 	}
 
 	baseHeaders := protocolHeaders(c.Request.Header)
+	rewriteCallCreateOpenAIAlpha(baseHeaders)
 	baseHeaders.Set("Content-Type", upstreamContentType)
 	performRequest := func(current *auth.Auth) (*http.Response, error) {
 		headers := baseHeaders.Clone()
@@ -783,6 +784,34 @@ func protocolHeaders(source http.Header) http.Header {
 		}
 	}
 	return headers
+}
+
+// rewriteCallCreateOpenAIAlpha maps Desktop quicksilver=v2 onto AVAS realtime v1
+// for POST /v1/live only. Sideband and websocket keep protocolHeaders unchanged.
+func rewriteCallCreateOpenAIAlpha(headers http.Header) {
+	if headers == nil {
+		return
+	}
+	values := headers.Values("OpenAI-Alpha")
+	if len(values) == 0 {
+		headers.Set("OpenAI-Alpha", "quicksilver=v1")
+		return
+	}
+	headers.Del("OpenAI-Alpha")
+	for _, value := range values {
+		headers.Add("OpenAI-Alpha", rewriteQuicksilverAlphaVersion(value, "v1"))
+	}
+}
+
+func rewriteQuicksilverAlphaVersion(value, version string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "quicksilver=" + version
+	}
+	if strings.Contains(trimmed, "quicksilver=") {
+		return strings.ReplaceAll(trimmed, "quicksilver=v2", "quicksilver="+version)
+	}
+	return trimmed + ", quicksilver=" + version
 }
 
 func setAccountHeader(headers http.Header, selected *auth.Auth) {

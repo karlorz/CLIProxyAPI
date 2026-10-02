@@ -375,6 +375,12 @@ func TestHandlerRewritesLiveCallAndSchedulesOAuth(t *testing.T) {
 	if got := upstreamPayload.Session["model"]; got != "gpt-live-1-codex" {
 		t.Fatalf("upstream session model = %#v", got)
 	}
+	if _, ok := upstreamPayload.Session["type"]; ok {
+		t.Fatalf("call-create must not set session.type; session=%v", upstreamPayload.Session)
+	}
+	if !strings.Contains(executor.request.URL.RawQuery, "architecture=avas") {
+		t.Fatalf("upstream query = %q, want architecture=avas", executor.request.URL.RawQuery)
+	}
 	if got := executor.request.Header.Get("Content-Type"); got != "application/json" {
 		t.Fatalf("Content-Type = %q, want application/json", got)
 	}
@@ -385,7 +391,7 @@ func TestHandlerRewritesLiveCallAndSchedulesOAuth(t *testing.T) {
 		t.Fatalf("Chatgpt-Account-Id = %q, want account-123", got)
 	}
 	for header, want := range map[string]string{
-		"OpenAI-Alpha":      "quicksilver=v2",
+		"OpenAI-Alpha":      "quicksilver=v1",
 		"Originator":        "Codex Desktop",
 		"Session-Id":        "session-123",
 		"Thread-Id":         "thread-123",
