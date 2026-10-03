@@ -496,13 +496,7 @@ func (h *Handler) selectOAuth(ctx context.Context, model string, opts coreexecut
 			selected = selection.CloneAuth()
 		}
 	} else {
-		selected, errSelect = h.authManager.SelectAuthByKind(ctx, "codex", model, auth.AuthKindOAuth, opts)
-		var selectionErr *auth.Error
-		if errors.As(errSelect, &selectionErr) && selectionErr.Code == "auth_not_found" {
-			// Older credentials may not have a registered model catalog. Preserve the
-			// legacy selection behavior only when model-aware selection has no match.
-			selected, errSelect = h.authManager.SelectAuthByKind(ctx, "codex", "", auth.AuthKindOAuth, opts)
-		}
+		selected, errSelect = h.authManager.SelectAuthByKind(ctx, "codex", "", auth.AuthKindOAuth, opts)
 	}
 	if errSelect != nil && selection != nil {
 		selection.End("selection_failed")
