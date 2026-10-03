@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	internalregistry "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -855,6 +856,14 @@ func TestHandlerUsesLiveModelForLegacyAuthSelection(t *testing.T) {
 		highPriorityAuthID = "codex-live-model-selection-high-priority"
 		liveAuthID         = "codex-live-model-selection-live"
 	)
+	modelRegistry := internalregistry.GetGlobalRegistry()
+	modelRegistry.RegisterClient(highPriorityAuthID, "codex", []*internalregistry.ModelInfo{{ID: "gpt-5.6-sol"}})
+	modelRegistry.RegisterClient(liveAuthID, "codex", []*internalregistry.ModelInfo{{ID: defaultLiveModel}})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(highPriorityAuthID)
+		modelRegistry.UnregisterClient(liveAuthID)
+	})
+
 	manager := auth.NewManager(nil, nil, nil)
 	executor := &captureExecutor{responseBody: &trackedResponseBody{Reader: strings.NewReader("v=0\r\n")}}
 	manager.RegisterExecutor(executor)
@@ -863,8 +872,7 @@ func TestHandlerUsesLiveModelForLegacyAuthSelection(t *testing.T) {
 		Provider: "codex",
 		Status:   auth.StatusActive,
 		Attributes: map[string]string{
-			"priority":        "98",
-			"excluded_models": defaultLiveModel,
+			"priority": "98",
 		},
 		Metadata: map[string]any{"access_token": "high-priority-token"},
 	})

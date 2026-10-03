@@ -21,10 +21,6 @@ const DisallowFreeAuthMetadataKey = "disallow_free_auth"
 // AuthSelectionModelMetadataKey overrides the model used only for auth selection.
 const AuthSelectionModelMetadataKey = "auth_selection_model"
 
-// ExcludedModelSelectionMetadataKey skips credentials whose excluded_models
-// metadata matches this request-scoped model, including wildcard patterns.
-const ExcludedModelSelectionMetadataKey = "excluded_model_selection"
-
 // ReasoningEffortMetadataKey stores the client-requested reasoning effort for usage logs.
 const ReasoningEffortMetadataKey = "reasoning_effort"
 
