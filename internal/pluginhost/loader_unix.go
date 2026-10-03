@@ -52,10 +52,6 @@ static const char* cliproxy_dlerror(void) {
 	return dlerror();
 }
 
-static int cliproxy_dlclose(void* handle) {
-	return dlclose(handle);
-}
-
 static int cliproxy_call_init(void* fn, const cliproxy_host_api* host, cliproxy_plugin_api* plugin) {
 	return ((cliproxy_plugin_init_fn)fn)(host, plugin);
 }
@@ -124,19 +120,16 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 	initSymbol := C.cliproxy_dlsym(handle, cSymbol)
 	C.free(unsafe.Pointer(cSymbol))
 	if initSymbol == nil {
-		C.cliproxy_dlclose(handle)
 		return nil, fmt.Errorf("missing cliproxy_plugin_init: %s", dlerrorString())
 	}
 
 	hostAPI := (*C.cliproxy_host_api)(C.malloc(C.size_t(unsafe.Sizeof(C.cliproxy_host_api{}))))
 	if hostAPI == nil {
-		C.cliproxy_dlclose(handle)
 		return nil, fmt.Errorf("allocate host api")
 	}
 	hostCtx := C.malloc(C.size_t(unsafe.Sizeof(C.uintptr_t(0))))
 	if hostCtx == nil {
 		C.free(unsafe.Pointer(hostAPI))
-		C.cliproxy_dlclose(handle)
 		return nil, fmt.Errorf("allocate host context")
 	}
 	id := hostCallbackID.Add(1)
@@ -160,8 +153,9 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 		return nil, fmt.Errorf("cliproxy_plugin_init returned %d", int(rc))
 	}
 	if uint32(client.api.abi_version) != pluginHostABIVersion {
+		abiVersion := uint32(client.api.abi_version)
 		client.Shutdown()
-		return nil, fmt.Errorf("plugin ABI version %d is not supported", uint32(client.api.abi_version))
+		return nil, fmt.Errorf("plugin ABI version %d is not supported", abiVersion)
 	}
 	if client.api.call == nil || client.api.free_buffer == nil {
 		client.Shutdown()
@@ -226,6 +220,7 @@ func (c *dynamicLibraryClient) Shutdown() {
 		C.cliproxy_shutdown_plugin(c.api.shutdown)
 		c.api.shutdown = nil
 	}
+	c.api = C.cliproxy_plugin_api{}
 	if c.hostCtx != nil {
 		id := uintptr(*(*C.uintptr_t)(c.hostCtx))
 		hostCallbackEntries.Delete(id)
@@ -236,10 +231,10 @@ func (c *dynamicLibraryClient) Shutdown() {
 		C.free(unsafe.Pointer(c.hostAPI))
 		c.hostAPI = nil
 	}
-	if c.handle != nil {
-		C.cliproxy_dlclose(c.handle)
-		c.handle = nil
-	}
+	// Once dlopen succeeds, leave native module mapped for host process lifetime.
+	// Retention covers validation failures as well as normal shutdown.
+	// Go c-shared runtime cannot be safely unloaded.
+	c.handle = nil
 }
 
 func dlerrorString() string {
