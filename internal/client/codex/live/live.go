@@ -487,8 +487,6 @@ func mediaCredentialName(selected *auth.Auth, authIndex string) string {
 }
 
 func (h *Handler) selectOAuth(ctx context.Context, model string, opts coreexecutor.Options) (*auth.HomeDispatchSelection, *auth.Auth, error) {
-	opts.EnsureMetadata()
-	opts.Metadata[coreexecutor.ExcludedModelSelectionMetadataKey] = model
 	var selection *auth.HomeDispatchSelection
 	var selected *auth.Auth
 	var errSelect error

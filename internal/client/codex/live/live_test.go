@@ -848,53 +848,6 @@ func TestHandlerUsesLiveModelForHomeDispatch(t *testing.T) {
 	}
 }
 
-func TestHandlerUsesLiveModelForLegacyAuthSelection(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	const (
-		highPriorityAuthID = "codex-live-model-selection-high-priority"
-		liveAuthID         = "codex-live-model-selection-live"
-	)
-	manager := auth.NewManager(nil, nil, nil)
-	executor := &captureExecutor{responseBody: &trackedResponseBody{Reader: strings.NewReader("v=0\r\n")}}
-	manager.RegisterExecutor(executor)
-	registerCredential(t, manager, &auth.Auth{
-		ID:       highPriorityAuthID,
-		Provider: "codex",
-		Status:   auth.StatusActive,
-		Attributes: map[string]string{
-			"priority":        "98",
-			"excluded_models": defaultLiveModel,
-		},
-		Metadata: map[string]any{"access_token": "high-priority-token"},
-	})
-	registerCredential(t, manager, &auth.Auth{
-		ID:       liveAuthID,
-		Provider: "codex",
-		Status:   auth.StatusActive,
-		Attributes: map[string]string{
-			"priority": "97",
-		},
-		Metadata: map[string]any{"access_token": "live-token"},
-	})
-
-	handler := NewHandler(manager, nil)
-	router := gin.New()
-	router.POST("/v1/live", handler.Handle)
-
-	request := httptest.NewRequest(http.MethodPost, "/v1/live", strings.NewReader(`{"sdp":"v=0"}`))
-	request.Header.Set("Content-Type", "application/json")
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, request)
-
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusCreated, recorder.Body.String())
-	}
-	if executor.selectedAuth == nil || executor.selectedAuth.ID != liveAuthID {
-		t.Fatalf("selected legacy auth = %#v, want %s", executor.selectedAuth, liveAuthID)
-	}
-}
-
 func TestHomeLiveSessionExpiryReleasesSelection(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
