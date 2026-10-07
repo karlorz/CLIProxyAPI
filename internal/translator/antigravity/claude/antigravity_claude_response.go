@@ -472,7 +472,7 @@ func appendFinalEvents(params *Params, output *[]byte, force bool) {
 		params.ResponseType = 0
 	}
 
-	stopReason := resolveStopReason(params)
+	stopReason := resolveStopReason(params.FinishReason, params.HasToolUse)
 	usageOutputTokens := params.CandidatesTokenCount + params.ThoughtsTokenCount
 	if usageOutputTokens == 0 && params.TotalTokenCount > 0 {
 		usageOutputTokens = params.TotalTokenCount - params.PromptTokenCount
@@ -498,18 +498,16 @@ func appendFinalEvents(params *Params, output *[]byte, force bool) {
 	params.HasSentFinalEvents = true
 }
 
-func resolveStopReason(params *Params) string {
-	if params.HasToolUse {
+func resolveStopReason(finishReason string, hasToolUse bool) string {
+	if hasToolUse {
 		return "tool_use"
 	}
 
-	switch params.FinishReason {
+	switch finishReason {
 	case "MAX_TOKENS":
 		return "max_tokens"
 	case "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "SPII", "BLOCKLIST", "MALFORMED_FUNCTION_CALL", "IMAGE_SAFETY":
 		return "refusal"
-	case "STOP", "FINISH_REASON_UNSPECIFIED", "UNKNOWN", "":
-		return "end_turn"
 	default:
 		return "end_turn"
 	}
@@ -732,23 +730,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		responseJSON, _ = sjson.SetRawBytes(responseJSON, "content", translatorcommon.JoinRawArray(blocks))
 	}
 
-	stopReason := "end_turn"
-	if hasToolCall {
-		stopReason = "tool_use"
-	} else {
-		if finish := root.Get("response.candidates.0.finishReason"); finish.Exists() {
-			switch finish.String() {
-			case "MAX_TOKENS":
-				stopReason = "max_tokens"
-			case "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "SPII", "BLOCKLIST", "MALFORMED_FUNCTION_CALL", "IMAGE_SAFETY":
-				stopReason = "refusal"
-			case "STOP", "FINISH_REASON_UNSPECIFIED", "UNKNOWN", "":
-				stopReason = "end_turn"
-			default:
-				stopReason = "end_turn"
-			}
-		}
-	}
+	stopReason := resolveStopReason(root.Get("response.candidates.0.finishReason").String(), hasToolCall)
 	responseJSON, _ = sjson.SetBytes(responseJSON, "stop_reason", stopReason)
 
 	if promptTokens == 0 && outputTokens == 0 {
