@@ -260,6 +260,8 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, _ string, originalRequestR
 					finishReason = "tool_calls"
 				} else if upstreamFinishReason == "MAX_TOKENS" {
 					finishReason = "max_tokens"
+				} else if isGeminiRefusalFinishReason(upstreamFinishReason) {
+					finishReason = "content_filter"
 				} else {
 					finishReason = "stop"
 				}
@@ -278,6 +280,15 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, _ string, originalRequestR
 	}
 
 	return responseStrings
+}
+
+func isGeminiRefusalFinishReason(reason string) bool {
+	switch strings.ToUpper(strings.TrimSpace(reason)) {
+	case "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "SPII", "BLOCKLIST", "MALFORMED_FUNCTION_CALL", "IMAGE_SAFETY":
+		return true
+	default:
+		return false
+	}
 }
 
 // ConvertGeminiResponseToOpenAINonStream converts a non-streaming Gemini response to a non-streaming OpenAI response.
@@ -352,8 +363,13 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, _ string, origina
 
 			// Set finish reason.
 			if finishReasonResult := candidate.Get("finishReason"); finishReasonResult.Exists() {
-				choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "finish_reason", strings.ToLower(finishReasonResult.String()))
-				choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "native_finish_reason", strings.ToLower(finishReasonResult.String()))
+				nativeReason := strings.ToLower(finishReasonResult.String())
+				finishReason := nativeReason
+				if isGeminiRefusalFinishReason(finishReasonResult.String()) {
+					finishReason = "content_filter"
+				}
+				choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "finish_reason", finishReason)
+				choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "native_finish_reason", nativeReason)
 			}
 
 			partsResult := candidate.Get("content.parts")

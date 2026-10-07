@@ -273,6 +273,8 @@ func resolveOpenAIFinishReason(params *convertCliResponseToOpenAIChatParams) (fi
 		finishReason = "tool_calls"
 	case params.UpstreamFinishReason == "MAX_TOKENS":
 		finishReason = "max_tokens"
+	case isGeminiRefusalFinishReason(params.UpstreamFinishReason):
+		finishReason = "content_filter"
 	default:
 		finishReason = "stop"
 	}
@@ -281,6 +283,15 @@ func resolveOpenAIFinishReason(params *convertCliResponseToOpenAIChatParams) (fi
 		nativeFinishReason = strings.ToLower(params.UpstreamFinishReason)
 	}
 	return finishReason, nativeFinishReason
+}
+
+func isGeminiRefusalFinishReason(reason string) bool {
+	switch strings.ToUpper(strings.TrimSpace(reason)) {
+	case "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "SPII", "BLOCKLIST", "MALFORMED_FUNCTION_CALL", "IMAGE_SAFETY":
+		return true
+	default:
+		return false
+	}
 }
 
 func setOpenAIUsageMetadata(template []byte, usageResult gjson.Result) []byte {

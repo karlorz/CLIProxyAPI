@@ -317,6 +317,88 @@ func TestConvertGeminiResponseToOpenAIResponses_SignedVisibleThenUnsignedPreserv
 	}
 }
 
+func TestConvertGeminiResponseToOpenAIResponses_RefusalClassIncompleteDetails(t *testing.T) {
+	testCases := []struct {
+		upstreamReason string
+	}{
+		{upstreamReason: "SAFETY"},
+		{upstreamReason: "RECITATION"},
+		{upstreamReason: "PROHIBITED_CONTENT"},
+		{upstreamReason: "SPII"},
+		{upstreamReason: "BLOCKLIST"},
+		{upstreamReason: "MALFORMED_FUNCTION_CALL"},
+		{upstreamReason: "IMAGE_SAFETY"},
+	}
+
+	for _, tc := range testCases {
+		t.Run("stream_"+tc.upstreamReason, func(t *testing.T) {
+			lines := []string{
+				`data: {"response":{"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"` + tc.upstreamReason + `"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15},"responseId":"resp_refusal"}}`,
+			}
+			var param any
+			var completed gjson.Result
+			for _, line := range lines {
+				for _, chunk := range ConvertGeminiResponseToOpenAIResponses(context.Background(), "model", nil, nil, []byte(line), &param) {
+					event, data := parseSSEEvent(t, chunk)
+					if event == "response.completed" {
+						t.Fatalf("expected response.incomplete, got response.completed")
+					}
+					if event == "response.incomplete" {
+						completed = data.Get("response")
+					}
+				}
+			}
+			if !completed.Exists() {
+				t.Fatalf("missing response.incomplete event")
+			}
+			if status := completed.Get("status").String(); status != "incomplete" {
+				t.Errorf("status = %q, want incomplete", status)
+			}
+			if reason := completed.Get("incomplete_details.reason").String(); reason != "content_filter" {
+				t.Errorf("incomplete_details.reason = %q, want content_filter", reason)
+			}
+		})
+
+		t.Run("nonstream_"+tc.upstreamReason, func(t *testing.T) {
+			raw := []byte(`{
+				"candidates": [{
+					"content": {"parts": [{"text": ""}]},
+					"finishReason": "` + tc.upstreamReason + `"
+				}],
+				"usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15},
+				"responseId": "resp_refusal"
+			}`)
+			out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "model", nil, nil, raw, nil)
+			parsed := gjson.ParseBytes(out)
+			if status := parsed.Get("status").String(); status != "incomplete" {
+				t.Errorf("status = %q, want incomplete", status)
+			}
+			if reason := parsed.Get("incomplete_details.reason").String(); reason != "content_filter" {
+				t.Errorf("incomplete_details.reason = %q, want content_filter", reason)
+			}
+		})
+	}
+}
+
+func TestConvertGeminiResponseToOpenAIResponses_MaxTokensIncompleteDetails(t *testing.T) {
+	raw := []byte(`{
+		"candidates": [{
+			"content": {"parts": [{"text": "cut off"}]},
+			"finishReason": "MAX_TOKENS"
+		}],
+		"usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15},
+		"responseId": "resp_maxtokens"
+	}`)
+	out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "model", nil, nil, raw, nil)
+	parsed := gjson.ParseBytes(out)
+	if status := parsed.Get("status").String(); status != "incomplete" {
+		t.Errorf("status = %q, want incomplete", status)
+	}
+	if reason := parsed.Get("incomplete_details.reason").String(); reason != "max_output_tokens" {
+		t.Errorf("incomplete_details.reason = %q, want max_output_tokens", reason)
+	}
+}
+
 func TestConvertGeminiResponseToOpenAIResponses_LeadingCarrierDoesNotCrossSignedThought(t *testing.T) {
 	signature2 := differentResponsesGeminiThoughtSignature(t)
 	lines := []string{

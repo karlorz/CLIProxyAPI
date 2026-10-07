@@ -506,11 +506,13 @@ func resolveStopReason(params *Params) string {
 	switch params.FinishReason {
 	case "MAX_TOKENS":
 		return "max_tokens"
-	case "STOP", "FINISH_REASON_UNSPECIFIED", "UNKNOWN":
+	case "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "SPII", "BLOCKLIST", "MALFORMED_FUNCTION_CALL", "IMAGE_SAFETY":
+		return "refusal"
+	case "STOP", "FINISH_REASON_UNSPECIFIED", "UNKNOWN", "":
+		return "end_turn"
+	default:
 		return "end_turn"
 	}
-
-	return "end_turn"
 }
 
 // ConvertAntigravityResponseToClaudeNonStream converts a non-streaming Antigravity response to a non-streaming Claude response.
@@ -738,7 +740,9 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 			switch finish.String() {
 			case "MAX_TOKENS":
 				stopReason = "max_tokens"
-			case "STOP", "FINISH_REASON_UNSPECIFIED", "UNKNOWN":
+			case "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "SPII", "BLOCKLIST", "MALFORMED_FUNCTION_CALL", "IMAGE_SAFETY":
+				stopReason = "refusal"
+			case "STOP", "FINISH_REASON_UNSPECIFIED", "UNKNOWN", "":
 				stopReason = "end_turn"
 			default:
 				stopReason = "end_turn"

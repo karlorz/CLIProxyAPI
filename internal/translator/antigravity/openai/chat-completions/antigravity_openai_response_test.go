@@ -84,6 +84,79 @@ func TestFinishReasonMaxTokens(t *testing.T) {
 	}
 }
 
+func TestFinishReasonContentFilterForRefusalClass(t *testing.T) {
+	testCases := []struct {
+		upstreamReason string
+		wantNative     string
+	}{
+		{upstreamReason: "SAFETY", wantNative: "safety"},
+		{upstreamReason: "RECITATION", wantNative: "recitation"},
+		{upstreamReason: "PROHIBITED_CONTENT", wantNative: "prohibited_content"},
+		{upstreamReason: "SPII", wantNative: "spii"},
+		{upstreamReason: "BLOCKLIST", wantNative: "blocklist"},
+		{upstreamReason: "MALFORMED_FUNCTION_CALL", wantNative: "malformed_function_call"},
+		{upstreamReason: "IMAGE_SAFETY", wantNative: "image_safety"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.upstreamReason, func(t *testing.T) {
+			ctx := context.Background()
+			var param any
+
+			chunk := []byte(`{"response":{"candidates":[{"finishReason":"` + tc.upstreamReason + `"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}}`)
+			result := ConvertAntigravityResponseToOpenAI(ctx, "model", nil, nil, chunk, &param)
+			if len(result) != 1 {
+				t.Fatalf("Expected 1 result from chunk, got %d", len(result))
+			}
+			fr := gjson.GetBytes(result[0], "choices.0.finish_reason").String()
+			if fr != "content_filter" {
+				t.Errorf("Expected finish_reason 'content_filter', got: %s", fr)
+			}
+			nfr := gjson.GetBytes(result[0], "choices.0.native_finish_reason").String()
+			if nfr != tc.wantNative {
+				t.Errorf("Expected native_finish_reason %q, got: %s", tc.wantNative, nfr)
+			}
+		})
+	}
+}
+
+func TestConvertAntigravityResponseToOpenAINonStream_ContentFilterForRefusalClass(t *testing.T) {
+	testCases := []struct {
+		upstreamReason string
+		wantNative     string
+	}{
+		{upstreamReason: "SAFETY", wantNative: "safety"},
+		{upstreamReason: "RECITATION", wantNative: "recitation"},
+		{upstreamReason: "PROHIBITED_CONTENT", wantNative: "prohibited_content"},
+		{upstreamReason: "SPII", wantNative: "spii"},
+		{upstreamReason: "BLOCKLIST", wantNative: "blocklist"},
+		{upstreamReason: "MALFORMED_FUNCTION_CALL", wantNative: "malformed_function_call"},
+		{upstreamReason: "IMAGE_SAFETY", wantNative: "image_safety"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.upstreamReason, func(t *testing.T) {
+			raw := []byte(`{
+				"response": {
+					"candidates": [{
+						"finishReason": "` + tc.upstreamReason + `"
+					}],
+					"usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15}
+				}
+			}`)
+			out := ConvertAntigravityResponseToOpenAINonStream(context.Background(), "model", nil, nil, raw, nil)
+			fr := gjson.GetBytes(out, "choices.0.finish_reason").String()
+			if fr != "content_filter" {
+				t.Errorf("Expected finish_reason 'content_filter', got: %s", fr)
+			}
+			nfr := gjson.GetBytes(out, "choices.0.native_finish_reason").String()
+			if nfr != tc.wantNative {
+				t.Errorf("Expected native_finish_reason %q, got: %s", tc.wantNative, nfr)
+			}
+		})
+	}
+}
+
 func TestToolCallTakesPriorityOverMaxTokens(t *testing.T) {
 	ctx := context.Background()
 	var param any
