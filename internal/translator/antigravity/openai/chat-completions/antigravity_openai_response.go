@@ -296,7 +296,7 @@ func isGeminiRefusalFinishReason(reason string) bool {
 
 func setOpenAIUsageMetadata(template []byte, usageResult gjson.Result) []byte {
 	cachedTokenCount := usageResult.Get("cachedContentTokenCount").Int()
-	template, _ = sjson.SetBytes(template, "usage.completion_tokens", usageResult.Get("candidatesTokenCount").Int())
+	template, _ = sjson.SetBytes(template, "usage.completion_tokens", usageResult.Get("candidatesTokenCount").Int()+usageResult.Get("thoughtsTokenCount").Int())
 	if totalTokenCountResult := usageResult.Get("totalTokenCount"); totalTokenCountResult.Exists() {
 		template, _ = sjson.SetBytes(template, "usage.total_tokens", totalTokenCountResult.Int())
 	}
