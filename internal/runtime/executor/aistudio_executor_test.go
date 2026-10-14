@@ -42,10 +42,10 @@ func TestAIStudioTranslateRequestPreservesSummaryFromOriginalRequest(t *testing.
 func TestAIStudioTranslateRequestNormalizesThinkingLevel(t *testing.T) {
 	executor := NewAIStudioExecutor(&config.Config{}, "aistudio", nil)
 	req := cliproxyexecutor.Request{
-		Model: "gemini-3.7-flash",
+		Model: "gemini-3.8-flash",
 		Payload: []byte(`{
 			"contents":[{"role":"user","parts":[{"text":"Human: Hi"}]}],
-			"model":"gemini-3.7-flash",
+			"model":"gemini-3.8-flash",
 			"generationConfig":{"thinkingConfig":{"thinkingLevel":"high","includeThoughts":true}}
 		}`),
 	}
@@ -65,12 +65,12 @@ func TestAIStudioTranslateRequestNormalizesThinkingLevel(t *testing.T) {
 
 func TestAIStudioTranslateRequestPayloadOverrideWinsThinkingNormalization(t *testing.T) {
 	executor := NewAIStudioExecutor(&config.Config{Payload: config.PayloadConfig{Override: []config.PayloadRule{{
-		Models: []config.PayloadModelRule{{Name: "gemini-3.7-flash", Protocol: "gemini"}},
+		Models: []config.PayloadModelRule{{Name: "gemini-3.8-flash", Protocol: "gemini"}},
 		Params: map[string]any{"generationConfig.thinkingConfig.thinkingLevel": "medium"},
 	}}}}, "aistudio", nil)
 	req := cliproxyexecutor.Request{
-		Model:   "gemini-3.7-flash",
-		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"model":"gemini-3.7-flash"}`),
+		Model:   "gemini-3.8-flash",
+		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"model":"gemini-3.8-flash"}`),
 	}
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini}
 
@@ -120,7 +120,7 @@ func TestNormalizeAIStudioThinkingLevel(t *testing.T) {
 func TestAIStudioTranslateRequestPrependsLeadingUserForIssue4959ResponsesHistory(t *testing.T) {
 	executor := NewAIStudioExecutor(&config.Config{}, "aistudio", nil)
 	_, body, err := executor.translateRequest(context.Background(), cliproxyexecutor.Request{
-		Model:   "gemini-3.7-flash-high",
+		Model:   "gemini-3.8-flash-high",
 		Payload: issue4959ResponsesModelFirstPayload(),
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse}, false)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestAIStudioTranslateRequestPrependsLeadingUserForIssue4959ResponsesHistory
 func TestAIStudioTranslateRequestAppendsTrailingUserForTrailingModelTurn(t *testing.T) {
 	executor := NewAIStudioExecutor(&config.Config{}, "aistudio", nil)
 	_, body, err := executor.translateRequest(context.Background(), cliproxyexecutor.Request{
-		Model: "gemini-3.7-flash",
+		Model: "gemini-3.8-flash",
 		Payload: []byte(`{"contents":[` +
 			`{"role":"user","parts":[{"text":"hello"}]},` +
 			`{"role":"model","parts":[{"text":"answer"}]}` +
@@ -154,7 +154,7 @@ func TestAIStudioTranslateRequestCountTokensPreservesTrailingModelTurn(t *testin
 	executor := NewAIStudioExecutor(&config.Config{}, "aistudio", nil)
 	// When action is countTokens, trailing model turn must not be modified
 	_, body, err := executor.translateRequest(context.Background(), cliproxyexecutor.Request{
-		Model: "gemini-3.7-flash",
+		Model: "gemini-3.8-flash",
 		Payload: []byte(`{"contents":[` +
 			`{"role":"user","parts":[{"text":"hello"}]},` +
 			`{"role":"model","parts":[{"text":"answer"}]}` +
