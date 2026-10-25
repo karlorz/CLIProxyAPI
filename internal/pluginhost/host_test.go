@@ -1903,6 +1903,8 @@ func TestHostCanceledInitializationDiscardsBlockedClient(t *testing.T) {
 		registration: validTestPlugin("alpha"),
 	}
 	h := NewForTest(&blockingHostCallLoader{client: client})
+	cleanupDone := make(chan struct{})
+	h.loadCleanupDoneHook = func() { close(cleanupDone) }
 	cfg := &config.Config{Plugins: config.PluginsConfig{
 		Enabled: true,
 		Dir:     makePluginDir(t, "alpha"),
@@ -1922,10 +1924,9 @@ func TestHostCanceledInitializationDiscardsBlockedClient(t *testing.T) {
 	}
 
 	close(client.release)
-	deadline := time.Now().Add(time.Second)
-	for client.shutdown.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
+	// Late cleanup shuts the client down first and drops the load token after;
+	// wait for the end of the cleanup, not for the shutdown alone.
+	waitForHostTestSignal(t, cleanupDone, "late load cleanup")
 	if got := client.shutdown.Load(); got != 1 {
 		t.Fatalf("blocked initialization client shutdown calls = %d, want 1", got)
 	}
@@ -1942,6 +1943,8 @@ func TestHostCancellationUnderMutationLockDoesNotInsertLoadedPlugin(t *testing.T
 		registration: validTestPlugin("alpha"),
 	}
 	h := NewForTest(&blockingHostCallLoader{client: client})
+	cleanupDone := make(chan struct{})
+	h.loadCleanupDoneHook = func() { close(cleanupDone) }
 	cfg := &config.Config{Plugins: config.PluginsConfig{
 		Enabled: true,
 		Dir:     makePluginDir(t, "alpha"),
@@ -1962,10 +1965,9 @@ func TestHostCancellationUnderMutationLockDoesNotInsertLoadedPlugin(t *testing.T
 	h.mu.Unlock()
 	waitForHostTestSignal(t, applyDone, "canceled plugin apply")
 
-	deadline := time.Now().Add(time.Second)
-	for client.shutdown.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
+	// Late cleanup shuts the client down first and drops the load token after;
+	// wait for the end of the cleanup, not for the shutdown alone.
+	waitForHostTestSignal(t, cleanupDone, "late load cleanup")
 	if got := client.shutdown.Load(); got != 1 {
 		t.Fatalf("late client shutdown calls = %d, want 1", got)
 	}

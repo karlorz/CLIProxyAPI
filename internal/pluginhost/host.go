@@ -97,6 +97,8 @@ type Host struct {
 	modelStreams           *modelStreamBridge
 	callbackContexts       *callbackContextRegistry
 	snapshot               atomic.Value
+	// loadCleanupDoneHook, set by tests, runs after a late load cleanup dropped its load token.
+	loadCleanupDoneHook func()
 }
 
 func New() *Host {
@@ -595,6 +597,9 @@ func (h *Host) finishPluginLoadCleanup(id string, request *pluginLoadRequest, lo
 	go func() {
 		h.discardLoadedPlugin(loaded)
 		h.clearLoadingRequest(id, request)
+		if h.loadCleanupDoneHook != nil {
+			h.loadCleanupDoneHook()
+		}
 	}()
 }
 
