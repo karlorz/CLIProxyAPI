@@ -3,6 +3,7 @@ name: upstream-sync-pr
 on:
   schedule:
     - cron: '17 2 * * *'
+    - cron: '17 16 * * *'
   workflow_dispatch:
 
 permissions:
