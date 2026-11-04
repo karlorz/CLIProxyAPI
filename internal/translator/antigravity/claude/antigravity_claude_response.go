@@ -562,7 +562,7 @@ func appendFinalEvents(params *Params, output *[]byte, force bool) {
 		params.ResponseType = 0
 	}
 
-	stopReason := resolveStopReason(params.FinishReason, params.HasToolUse)
+	stopReason := resolveStopReason(params)
 	usageOutputTokens := params.CandidatesTokenCount + params.ThoughtsTokenCount
 	if usageOutputTokens == 0 && params.TotalTokenCount > 0 {
 		// PromptTokenCount excludes cached tokens for input_tokens, while
@@ -834,7 +834,6 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	}
 	stopReason := resolveAntigravityClaudeStopReason(finishReason, hasToolCall)
 	_ = responseDoc.Set("stop_reason", stopReason)
-
 
 	if promptTokens == 0 && outputTokens == 0 {
 		if usageMeta := root.Get("response.usageMetadata"); !usageMeta.Exists() {

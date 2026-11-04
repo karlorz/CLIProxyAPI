@@ -1658,7 +1658,7 @@ func TestConvertAntigravityResponseToClaudeStream_PartlessSafetyClosesMessageWit
 	for _, line := range strings.Split(outputText, "\n") {
 		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"type":"message_delta"`) {
 			foundDelta = true
-			deltaJSON := gjson.Parse(strings.TrimPrefix(line, "data: "))
+			deltaJSON := ojson.Parse(strings.TrimPrefix(line, "data: "))
 			if got := deltaJSON.Get("delta.stop_reason").String(); got != "refusal" {
 				t.Fatalf("stop_reason = %q, want refusal. Payload: %s", got, line)
 			}
@@ -1710,7 +1710,7 @@ func TestConvertAntigravityResponseToClaudeStream_PartlessMalformedFunctionCallC
 	for _, line := range strings.Split(outputText, "\n") {
 		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"type":"message_delta"`) {
 			foundDelta = true
-			deltaJSON := gjson.Parse(strings.TrimPrefix(line, "data: "))
+			deltaJSON := ojson.Parse(strings.TrimPrefix(line, "data: "))
 			if got := deltaJSON.Get("delta.stop_reason").String(); got != "refusal" {
 				t.Fatalf("stop_reason = %q, want refusal. Payload: %s", got, line)
 			}
@@ -1757,7 +1757,7 @@ func TestConvertAntigravityResponseToClaudeNonStream_SafetyAndMalformedFunctionC
 				}
 			}`)
 			output := ConvertAntigravityResponseToClaudeNonStream(ctx, "claude-opus-5-5", requestJSON, requestJSON, rawJSON, nil)
-			outputJSON := gjson.ParseBytes(output)
+			outputJSON := ojson.ParseBytes(output)
 			if got := outputJSON.Get("stop_reason").String(); got != tc.wantReason {
 				t.Fatalf("stop_reason = %q, want %q. Output: %s", got, tc.wantReason, string(output))
 			}

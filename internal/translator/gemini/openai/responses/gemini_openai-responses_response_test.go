@@ -540,7 +540,7 @@ func TestConvertGeminiResponseToOpenAIResponses_RefusalClassIncompleteDetails(t 
 				`data: {"response":{"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"` + tc.upstreamReason + `"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15},"responseId":"resp_refusal"}}`,
 			}
 			var param any
-			var completed gjson.Result
+			var completed ojson.Result
 			for _, line := range lines {
 				for _, chunk := range ConvertGeminiResponseToOpenAIResponses(context.Background(), "model", nil, nil, []byte(line), &param) {
 					event, data := parseSSEEvent(t, chunk)
@@ -573,7 +573,7 @@ func TestConvertGeminiResponseToOpenAIResponses_RefusalClassIncompleteDetails(t 
 				"responseId": "resp_refusal"
 			}`)
 			out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "model", nil, nil, raw, nil)
-			parsed := gjson.ParseBytes(out)
+			parsed := ojson.ParseBytes(out)
 			if status := parsed.Get("status").String(); status != "incomplete" {
 				t.Errorf("status = %q, want incomplete", status)
 			}
@@ -594,7 +594,7 @@ func TestConvertGeminiResponseToOpenAIResponses_MaxTokensIncompleteDetails(t *te
 		"responseId": "resp_maxtokens"
 	}`)
 	out := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "model", nil, nil, raw, nil)
-	parsed := gjson.ParseBytes(out)
+	parsed := ojson.ParseBytes(out)
 	if status := parsed.Get("status").String(); status != "incomplete" {
 		t.Errorf("status = %q, want incomplete", status)
 	}

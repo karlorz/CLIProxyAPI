@@ -88,11 +88,11 @@ func TestGeminiFinishReasonContentFilterForRefusalClass(t *testing.T) {
 			if len(result) != 1 {
 				t.Fatalf("expected 1 result from chunk, got %d", len(result))
 			}
-			fr := gjson.GetBytes(result[0], "choices.0.finish_reason").String()
+			fr := ojson.GetBytesNoCopy(result[0], "choices.0.finish_reason").String()
 			if fr != "content_filter" {
 				t.Errorf("expected finish_reason content_filter, got %s", fr)
 			}
-			nfr := gjson.GetBytes(result[0], "choices.0.native_finish_reason").String()
+			nfr := ojson.GetBytesNoCopy(result[0], "choices.0.native_finish_reason").String()
 			if nfr != tc.wantNative {
 				t.Errorf("expected native_finish_reason %q, got %s", tc.wantNative, nfr)
 			}
@@ -106,11 +106,11 @@ func TestGeminiFinishReasonContentFilterForRefusalClass(t *testing.T) {
 				"usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15}
 			}`)
 			out := ConvertGeminiResponseToOpenAINonStream(context.Background(), "model", nil, nil, raw, nil)
-			fr := gjson.GetBytes(out, "choices.0.finish_reason").String()
+			fr := ojson.GetBytesNoCopy(out, "choices.0.finish_reason").String()
 			if fr != "content_filter" {
 				t.Errorf("expected finish_reason content_filter, got %s", fr)
 			}
-			nfr := gjson.GetBytes(out, "choices.0.native_finish_reason").String()
+			nfr := ojson.GetBytesNoCopy(out, "choices.0.native_finish_reason").String()
 			if nfr != tc.wantNative {
 				t.Errorf("expected native_finish_reason %q, got %s", tc.wantNative, nfr)
 			}
