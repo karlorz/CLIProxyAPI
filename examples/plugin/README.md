@@ -181,6 +181,11 @@ Standard dynamic library plugins (`.so`, `.dylib`, `.dll`) participate in host l
 - **Native Module Retention**: Go plugins built as C-shared libraries (`-buildmode=c-shared`) start the Go runtime threads, goroutines, signal handlers, and GC upon being loaded. The Go runtime does not support hot-unloading or restarting within the same host process. Attempting to unload the native dynamic library (via `dlclose` on POSIX or `FreeLibrary` on Windows) while runtime background threads or signal handlers are active causes crashes or hangs during garbage collection, signal delivery, or process exit. Consequently, once a dynamic library module is loaded, the host process retains the shared library mapping in its address space for the remainder of the process lifetime.
 - **Resource Reclamation**: Logical unload frees all host allocations, detaches callbacks, and invokes plugin shutdown to allow the plugin to release internal resources. However, code segments and Go runtime state remain mapped until host process exit. Repeatedly reloading distinct dynamic library binaries or variants will consume additional process memory; full reclamation requires restarting the host process.
 
+When building prebuilt `c-shared` plugin release artifacts on CI runners for distribution across diverse machines, pin the baseline CPU instruction set so compiler-emitted instructions (such as AVX/AVX2/AVX-512 on modern `ubuntu-latest` runners) do not trigger `SIGILL` on older CPUs or virtualized hosts:
+
+- `amd64`: `GOAMD64=v1 CGO_CFLAGS="-march=x86-64"`
+- `arm64`: `GOARM64=v8.0 CGO_CFLAGS="-march=armv8-a"`
+
 ## Notes
 
 `protocol-format` uses a minimal executor because format declarations belong to executor capabilities.
