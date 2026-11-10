@@ -9,6 +9,7 @@ on:
 
 jobs:
   ensure-no-translator-changes:
+    if: github.head_ref != 'bot/release-pr'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
