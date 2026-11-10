@@ -11,6 +11,7 @@ on:
       - main
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -185,7 +186,7 @@ jobs:
           cat <<'EOF' > pr-body.md
           ## Summary
 
-          Draft release review for this fork.
+          Automatic fork release PR. It is marked ready and merged with a merge commit; no draft wait.
 
           Release Tag: ${{ steps.plan_release.outputs.release_tag }}
           Base Upstream Tag: ${{ steps.plan_release.outputs.latest_upstream_tag }}
@@ -194,9 +195,8 @@ jobs:
 
           ## Review Notes
 
-          - This PR is intentionally kept as a draft until release is approved.
-          - Review the commit summary below before marking ready and merging.
-          - Merging this PR is the approval step that creates the tag and dispatches the GitHub release and Docker publish workflows.
+          - Do not squash or rebase; merge commit only so upstream tag ancestry stays intact.
+          - Conflict-review PRs from `router-for-me:main` are not auto-merged.
 
           ## Unreleased Commits On Main
 
@@ -212,10 +212,10 @@ jobs:
           EOF
 
       - id: upsert_pr
-        name: Create or update draft release PR
+        name: Create or update release PR
         if: steps.plan_release.outputs.has_changes == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
           REPO_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
@@ -259,8 +259,7 @@ jobs:
               --body-file pr-body.md
 
             retry_gh gh pr ready "${existing_pr}" \
-                --repo "${GITHUB_REPOSITORY}" \
-                --undo || true
+                --repo "${GITHUB_REPOSITORY}" || true
 
             {
               echo "pr_number=${existing_pr}"
@@ -274,8 +273,7 @@ jobs:
                 --base "${BASE_BRANCH}" \
                 --head "${REPO_OWNER}:${RELEASE_BRANCH}" \
                 --title "${PR_TITLE}" \
-                --body-file pr-body.md \
-                --draft
+                --body-file pr-body.md
             )"
 
             {
@@ -285,16 +283,71 @@ jobs:
             } >> "${GITHUB_OUTPUT}"
           fi
 
-      - name: Summarize release draft
+      - id: merge_release_pr
+        name: Merge release PR
+        if: steps.upsert_pr.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+          GITHUB_DISPATCH_TOKEN: ${{ github.token }}
+          FORK_SYNC_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+          RELEASE_TAG: ${{ steps.plan_release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          retry_gh() {
+            local attempt=1
+            local max_attempts=5
+
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge "${max_attempts}" ]; then
+                return 1
+              fi
+
+              sleep $((attempt * 3))
+              attempt=$((attempt + 1))
+            done
+          }
+
+          pr_number="${{ steps.upsert_pr.outputs.pr_number }}"
+          gh pr ready "${pr_number}" --repo "${GITHUB_REPOSITORY}" || true
+          retry_gh gh pr merge "${pr_number}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --merge \
+            --subject "release: ${RELEASE_TAG}"
+          merge_sha="$(
+            gh pr view "${pr_number}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json mergeCommit \
+              --jq '.mergeCommit.oid // empty'
+          )"
+          if [ -z "${merge_sha}" ]; then
+            echo "Release PR merged but merge commit SHA is missing." >&2
+            exit 1
+          fi
+          echo "merge_sha=${merge_sha}" >> "${GITHUB_OUTPUT}"
+
+          if [ -z "${FORK_SYNC_TOKEN}" ]; then
+            GH_TOKEN="${GITHUB_DISPATCH_TOKEN}" gh workflow run fork-tag.yml \
+              --repo "${GITHUB_REPOSITORY}" \
+              -f "release_tag=${RELEASE_TAG}" \
+              -f "target_sha=${merge_sha}"
+          fi
+
+      - name: Summarize release PR
         if: steps.upsert_pr.outputs.pr_url != ''
         run: |
           {
-            echo "Release draft PR ${{
+            echo "Release PR ${{
               steps.upsert_pr.outputs.pr_action
-            }} successfully."
+            }} and merge attempted."
             echo
             echo "- PR: ${{ steps.upsert_pr.outputs.pr_url }}"
             echo "- Release tag: ${{ steps.plan_release.outputs.release_tag }}"
             echo "- Previous fork release: ${{ steps.plan_release.outputs.last_release_tag || 'none' }}"
             echo "- Base upstream tag: ${{ steps.plan_release.outputs.latest_upstream_tag }}"
+            echo "- Merge SHA: ${{ steps.merge_release_pr.outputs.merge_sha || 'none' }}"
           } >> "${GITHUB_STEP_SUMMARY}"

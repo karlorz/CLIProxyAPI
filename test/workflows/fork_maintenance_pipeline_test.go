@@ -74,4 +74,46 @@ func TestForkMaintenancePipeline(t *testing.T) {
 			t.Fatalf("review_pr GH_TOKEN = %q", got)
 		}
 	})
+
+	t.Run("release_pr_auto_merges_with_merge_commit", func(t *testing.T) {
+		release := loadWorkflow(t, "release-pr.yml")
+		permissions := requireChild(t, release, "permissions")
+		if got := requireScalar(t, permissions, "actions"); got != "write" {
+			t.Fatalf("release-pr permissions.actions = %q, want write", got)
+		}
+
+		_, upsert := findStep(t, release, "draft-release-pr", func(step *yaml.Node) bool {
+			return scalarValue(step, "id") == "upsert_pr"
+		})
+		upsertRun := requireScalar(t, upsert, "run")
+		if strings.Contains(upsertRun, "--draft") {
+			t.Fatal("release PR create must not use --draft")
+		}
+		if strings.Contains(upsertRun, "--undo") {
+			t.Fatal("release PR must stay ready, not return to draft")
+		}
+
+		_, mergeStep := findStep(t, release, "draft-release-pr", func(step *yaml.Node) bool {
+			return scalarValue(step, "id") == "merge_release_pr"
+		})
+		mergeEnv := requireChild(t, mergeStep, "env")
+		if got := requireScalar(t, mergeEnv, "FORK_SYNC_TOKEN"); got != "${{ secrets.FORK_SYNC_TOKEN }}" {
+			t.Fatalf("merge FORK_SYNC_TOKEN env = %q", got)
+		}
+		mergeRun := requireScalar(t, mergeStep, "run")
+		for _, want := range []string{
+			"gh pr ready",
+			"gh pr merge",
+			"--merge",
+			"gh workflow run fork-tag.yml",
+			`if [ -z "${FORK_SYNC_TOKEN}" ]`,
+		} {
+			if !strings.Contains(mergeRun, want) {
+				t.Fatalf("merge step missing %q:\n%s", want, mergeRun)
+			}
+		}
+		if strings.Contains(mergeRun, "--squash") || strings.Contains(mergeRun, "--rebase") {
+			t.Fatal("release PR must not squash or rebase")
+		}
+	})
 }
