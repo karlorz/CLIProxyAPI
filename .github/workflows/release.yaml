@@ -92,11 +92,32 @@ jobs:
             cat "$changelog_notes_file"
           } > "$updated_notes_file"
 
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$updated_notes_file"
-          else
-            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$updated_notes_file"
-          fi
+          create_or_edit_release() {
+            local attempt=0
+            local max=6
+            local delay=5
+            while true; do
+              attempt=$((attempt + 1))
+              if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+                if gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$updated_notes_file"; then
+                  return 0
+                fi
+              elif gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$updated_notes_file"; then
+                return 0
+              fi
+              if [ "$attempt" -ge "$max" ]; then
+                echo "failed to create or edit release ${RELEASE_TAG} after ${max} attempts" >&2
+                return 1
+              fi
+              echo "GitHub release API failed (attempt ${attempt}/${max}); retrying in ${delay}s" >&2
+              sleep "$delay"
+              delay=$((delay * 2))
+              if [ "$delay" -gt 40 ]; then
+                delay=40
+              fi
+            done
+          }
+          create_or_edit_release
 
   build-hosted:
     name: build ${{ matrix.target }}
@@ -705,8 +726,9 @@ jobs:
 
   publish-checksums:
     runs-on: ubuntu-latest
-    if: always()
+    if: ${{ always() && needs.prepare-release.result == 'success' }}
     needs:
+      - prepare-release
       - build-hosted
       - build-linux-glibc
       - build-linux-no-plugin
@@ -716,11 +738,13 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+          if-no-files-found: ignore
       - name: Publish final checksums
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          mkdir -p dist
           cd dist
           shopt -s nullglob
           archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)

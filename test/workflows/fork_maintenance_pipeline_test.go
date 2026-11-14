@@ -14,11 +14,19 @@ func TestForkMaintenancePipeline(t *testing.T) {
 		if got := strings.TrimSpace(requireScalar(t, buildJob, "if")); got != "github.head_ref != 'bot/release-pr'" {
 			t.Fatalf("pr-test-build build if = %q, want skip bot/release-pr", got)
 		}
+		buildSkip := requireChild(t, requireChild(t, build, "jobs"), "skip-bot-release-pr")
+		if got := strings.TrimSpace(requireScalar(t, buildSkip, "if")); got != "github.head_ref == 'bot/release-pr'" {
+			t.Fatalf("pr-test-build skip-bot-release-pr if = %q, want success job for bot/release-pr", got)
+		}
 
 		guard := loadWorkflow(t, "pr-path-guard.yml")
 		guardJob := requireChild(t, requireChild(t, guard, "jobs"), "ensure-no-translator-changes")
 		if got := strings.TrimSpace(requireScalar(t, guardJob, "if")); got != "github.head_ref != 'bot/release-pr'" {
 			t.Fatalf("translator-path-guard if = %q, want skip bot/release-pr", got)
+		}
+		guardSkip := requireChild(t, requireChild(t, guard, "jobs"), "skip-bot-release-pr")
+		if got := strings.TrimSpace(requireScalar(t, guardSkip, "if")); got != "github.head_ref == 'bot/release-pr'" {
+			t.Fatalf("translator-path-guard skip-bot-release-pr if = %q, want success job for bot/release-pr", got)
 		}
 	})
 
@@ -114,6 +122,43 @@ func TestForkMaintenancePipeline(t *testing.T) {
 		}
 		if strings.Contains(mergeRun, "--squash") || strings.Contains(mergeRun, "--rebase") {
 			t.Fatal("release PR must not squash or rebase")
+		}
+	})
+
+	t.Run("release_create_retries_and_checksums_need_prepare", func(t *testing.T) {
+		release := loadWorkflow(t, "release.yaml")
+		_, create := findStep(t, release, "prepare-release", func(step *yaml.Node) bool {
+			return scalarValue(step, "name") == "Create release"
+		})
+		createRun := requireScalar(t, create, "run")
+		for _, want := range []string{
+			"create_or_edit_release",
+			"retrying in",
+			"gh release create",
+			"gh release edit",
+		} {
+			if !strings.Contains(createRun, want) {
+				t.Fatalf("create release missing %q:\n%s", want, createRun)
+			}
+		}
+
+		checksums := requireChild(t, requireChild(t, release, "jobs"), "publish-checksums")
+		if got := strings.Join(strings.Fields(requireScalar(t, checksums, "if")), " "); !strings.Contains(got, "needs.prepare-release.result == 'success'") {
+			t.Fatalf("publish-checksums if = %q, want prepare-release success", got)
+		}
+		needs := requireChild(t, checksums, "needs")
+		if needs.Kind != yaml.SequenceNode {
+			t.Fatalf("publish-checksums.needs kind = %d, want sequence", needs.Kind)
+		}
+		foundPrepare := false
+		for _, item := range needs.Content {
+			if item.Value == "prepare-release" {
+				foundPrepare = true
+				break
+			}
+		}
+		if !foundPrepare {
+			t.Fatal("publish-checksums.needs must include prepare-release")
 		}
 	})
 }

@@ -7,6 +7,13 @@ permissions:
   contents: read
 
 jobs:
+  skip-bot-release-pr:
+    if: github.head_ref == 'bot/release-pr'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip required PR CI for bot/release-pr
+        run: echo 'bot/release-pr is covered by release-pr.yml; skipping pr-test-build'
+
   build:
     if: github.head_ref != 'bot/release-pr'
     runs-on: ubuntu-latest

@@ -8,6 +8,13 @@ on:
       - reopened
 
 jobs:
+  skip-bot-release-pr:
+    if: github.head_ref == 'bot/release-pr'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip translator path guard for bot/release-pr
+        run: echo 'bot/release-pr is covered by release-pr.yml; skipping translator-path-guard'
+
   ensure-no-translator-changes:
     if: github.head_ref != 'bot/release-pr'
     runs-on: ubuntu-latest
