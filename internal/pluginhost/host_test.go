@@ -443,8 +443,8 @@ func TestHostUnloadPluginTargetsOnlyRequestedPlugin(t *testing.T) {
 	if bravo.registerCalls != 1 {
 		t.Fatalf("bravo register calls = %d, want 1", bravo.registerCalls)
 	}
-	if bravo.reconfigureCalls != 0 {
-		t.Fatalf("bravo reconfigure calls = %d, want 0 when bravo yaml is unchanged", bravo.reconfigureCalls)
+	if bravo.reconfigureCalls != 1 {
+		t.Fatalf("bravo reconfigure calls = %d, want 1 after config reapply", bravo.reconfigureCalls)
 	}
 }
 
@@ -819,8 +819,8 @@ func TestHostApplyConfig_ReconfigureCalledOnReload(t *testing.T) {
 	if plugin.registerCalls != 1 {
 		t.Fatalf("Register calls = %d, want 1", plugin.registerCalls)
 	}
-	if plugin.reconfigureCalls != 0 {
-		t.Fatalf("Reconfigure calls = %d, want 0 after identical config reload", plugin.reconfigureCalls)
+	if plugin.reconfigureCalls != 1 {
+		t.Fatalf("Reconfigure calls = %d, want 1 after identical config reload", plugin.reconfigureCalls)
 	}
 	if loader.openCalls != 1 {
 		t.Fatalf("Open calls = %d, want 1", loader.openCalls)
@@ -850,15 +850,15 @@ func TestHostApplyConfig_ReconfigureCalledOnReload(t *testing.T) {
 	}
 	h.ApplyConfig(context.Background(), changedCfg)
 
-	if plugin.reconfigureCalls != 1 {
-		t.Fatalf("Reconfigure calls = %d, want 1 after changed config reload", plugin.reconfigureCalls)
+	if plugin.reconfigureCalls != 2 {
+		t.Fatalf("Reconfigure calls = %d, want 2 after changed config reload", plugin.reconfigureCalls)
 	}
 	if len(h.activeRecords()) != 1 {
 		t.Fatalf("Snapshot records = %d, want 1 after changed config reload", len(h.activeRecords()))
 	}
 }
 
-func TestHostApplyConfig_UnchangedYAMLKeepsRegisteredWhenReconfigureWouldHang(t *testing.T) {
+func TestHostApplyConfig_UnchangedYAMLKeepsRegisteredWhenReconfigureHangs(t *testing.T) {
 	loader := newTestSymbolLoader()
 	plugin := &testPlugin{
 		registerResult:    validTestPlugin("alpha"),
@@ -888,6 +888,10 @@ func TestHostApplyConfig_UnchangedYAMLKeepsRegisteredWhenReconfigureWouldHang(t 
 	}
 	lp.client = hangingReconfigureClient{inner: lp.client, abort: abort}
 	h.mu.Unlock()
+
+	previousTimeout := pluginLifecycleCallTimeout
+	pluginLifecycleCallTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { pluginLifecycleCallTimeout = previousTimeout })
 
 	done := make(chan struct{})
 	go func() {
@@ -2524,6 +2528,7 @@ func TestHostApplyConfigSerializesLifecycleDuringQuiesce(t *testing.T) {
 		"old." + pluginabi.MethodPluginRegister,
 		"old." + pluginabi.MethodPluginQuiesce,
 		"replacement." + pluginabi.MethodPluginRegister,
+		"replacement." + pluginabi.MethodPluginReconfigure,
 	}; !slices.Equal(got, want) {
 		t.Fatalf("lifecycle events = %v, want %v", got, want)
 	}
